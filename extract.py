@@ -737,6 +737,116 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
     return copied_files
 
 
+def export_directory_to_csv(target_dir, output_csv, recursive=True):
+    """导出目录结构到CSV文件
+    Args:
+        target_dir: 目标目录路径
+        output_csv: 输出CSV文件路径
+        recursive: 是否递归遍历子目录
+    """
+    try:
+        with open(output_csv, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            # 写入表头
+            writer.writerow(["名称", "类型", "完整路径", "大小(字节)", "修改时间", "层级"])
+            
+            if recursive:
+                # 递归遍历模式
+                for root, dirs, files in os.walk(target_dir):
+                    # 计算层级（相对target_dir）
+                    rel_path = os.path.relpath(root, target_dir)
+                    if rel_path == ".":
+                        level = 0
+                    else:
+                        level = rel_path.count(os.sep) + 1
+                    
+                    # 处理当前目录
+                    if root != target_dir or level == 0:
+                        dir_name = os.path.basename(root)
+                        dir_stat = os.stat(root)
+                        writer.writerow([
+                            dir_name,
+                            "文件夹",
+                            root,
+                            "",
+                            datetime.fromtimestamp(dir_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                            level
+                        ])
+                    
+                    # 处理文件
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_stat = os.stat(file_path)
+                            writer.writerow([
+                                file,
+                                "文件",
+                                file_path,
+                                file_stat.st_size,
+                                datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                level + 1
+                            ])
+                        except Exception as e:
+                            print(f"  警告: 无法获取文件信息 {file_path}: {e}")
+                            writer.writerow([file, "文件", file_path, "无法访问", "", level + 1])
+                            
+            else:
+                # 仅根目录模式
+                level = 0
+                
+                # 处理根目录本身
+                root_stat = os.stat(target_dir)
+                writer.writerow([
+                    os.path.basename(target_dir.rstrip("\\/")),
+                    "文件夹",
+                    target_dir,
+                    "",
+                    datetime.fromtimestamp(root_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    level
+                ])
+                
+                # 处理根目录下的文件和文件夹
+                try:
+                    items = os.listdir(target_dir)
+                    for item in items:
+                        item_path = os.path.join(target_dir, item)
+                        try:
+                            item_stat = os.stat(item_path)
+                            if os.path.isdir(item_path):
+                                writer.writerow([
+                                    item,
+                                    "文件夹",
+                                    item_path,
+                                    "",
+                                    datetime.fromtimestamp(item_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                    level + 1
+                                ])
+                            else:
+                                writer.writerow([
+                                    item,
+                                    "文件",
+                                    item_path,
+                                    item_stat.st_size,
+                                    datetime.fromtimestamp(item_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                    level + 1
+                                ])
+                        except Exception as e:
+                            print(f"  警告: 无法获取项目信息 {item_path}: {e}")
+                            item_type = "文件夹" if os.path.isdir(item_path) else "文件"
+                            writer.writerow([item, item_type, item_path, "无法访问", "", level + 1])
+                            
+                except Exception as e:
+                    print(f"无法列出目录内容 {target_dir}: {e}")
+                    return False
+        
+        print(f"目录结构已成功导出到: {output_csv}")
+        return True
+        
+    except Exception as e:
+        print(f"导出目录结构失败: {e}")
+        return False
+
+
 def cleanup_old_history(max_entries=50):
     """清理旧的历史记录，防止JSON文件过大
     Args:
@@ -776,15 +886,16 @@ if __name__ == "__main__":
             print("3. 撤回上一次操作")
             print("4. 重命名文件（原地）")
             print("5. 从CSV路径复制文件到目标文件夹")
-            print("6. 退出程序")
+            print("6. 导出目录结构到CSV")
+            print("7. 退出程序")
             
             while True:
-                choice = input("请输入选项 (1, 2, 3, 4, 5 或 6): ").strip()
-                if choice in ['1', '2', '3', '4', '5', '6']:
+                choice = input("请输入选项 (1, 2, 3, 4, 5, 6 或 7): ").strip()
+                if choice in ['1', '2', '3', '4', '5', '6', '7']:
                     break
                 print("无效选项，请重新输入")
             
-            if choice == '6':
+            if choice == '7':
                 print("程序退出")
                 break
                 
@@ -824,6 +935,27 @@ if __name__ == "__main__":
                     for file in copied:
                         print(" -", file)
                 
+                elif choice == '6':
+                    # 导出目录结构到CSV模式
+                    target_dir = input("请输入目标目录路径 (例如 D:\\TargetPath): ").strip('"')
+                    output_csv = input("请输入输出CSV路径 (例如 D:\\directory_structure.csv): ").strip('"')
+                    
+                    # ===== 遍历模式选择 =====
+                    recursive = False
+                    recursive_choice = input("是否递归遍历子目录？(y/n, 默认n): ").strip().lower()
+                    if recursive_choice == 'y' or recursive_choice == 'yes':
+                        recursive = True
+                        print("递归遍历所有子目录")
+                    else:
+                        print("仅导出根目录内容")
+                    
+                    print(f"\n=== 执行导出目录结构功能 ===")
+                    success = export_directory_to_csv(target_dir, output_csv, recursive)
+                    if success:
+                        print(f"目录结构已成功导出到: {output_csv}")
+                    else:
+                        print("导出目录结构失败")
+                
                 else:
                     # ===== 通用输入 =====
                     source = input("请输入源路径 (例如 D:\\SourcePath): ").strip('"')
@@ -858,8 +990,8 @@ if __name__ == "__main__":
                         for folder in copied:
                             print(" -", folder)
 
-                # 对于选项5，不进行结构导出
-                if choice != '5':
+                # 对于选项5和6，不进行结构导出
+                if choice not in ['5', '6']:
                     print("\n正在导出最终结构到:", log_csv)
                     export_structure_to_csv(target if choice != '4' else source, log_csv)
                     print("导出完成！")
