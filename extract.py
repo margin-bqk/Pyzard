@@ -456,20 +456,41 @@ def undo_last_operation():
     try:
         if last_operation["type"] == "剪切":
             # 撤回剪切操作：从备份恢复，删除目标文件
-            for backup_path, target_path in zip(last_operation["backup_paths"], last_operation["target_paths"]):
-                if os.path.exists(backup_path):
-                    # 恢复文件
-                    if os.path.isfile(backup_path):
-                        shutil.move(backup_path, last_operation["source_paths"][0])
-                    elif os.path.isdir(backup_path):
-                        shutil.move(backup_path, last_operation["source_paths"][0])
-                    
-                    # 删除目标文件
-                    if os.path.exists(target_path):
-                        if os.path.isfile(target_path):
-                            os.remove(target_path)
-                        elif os.path.isdir(target_path):
-                            shutil.rmtree(target_path)
+            success_count = 0
+            for i, (backup_path, target_path) in enumerate(zip(last_operation["backup_paths"], last_operation["target_paths"])):
+                try:
+                    if os.path.exists(backup_path):
+                        # 恢复文件到对应的源路径
+                        source_path = last_operation["source_paths"][i]
+                        
+                        # 确保源目录存在
+                        os.makedirs(os.path.dirname(source_path), exist_ok=True)
+                        
+                        if os.path.isfile(backup_path):
+                            shutil.move(backup_path, source_path)
+                        elif os.path.isdir(backup_path):
+                            shutil.move(backup_path, source_path)
+                        
+                        # 删除目标文件
+                        if os.path.exists(target_path) and target_path != source_path:
+                            if os.path.isfile(target_path):
+                                os.remove(target_path)
+                            elif os.path.isdir(target_path):
+                                shutil.rmtree(target_path)
+                        
+                        success_count += 1
+                        print(f"  已撤回: {target_path} -> {source_path}")
+                    else:
+                        print(f"  警告: 备份文件不存在: {backup_path}")
+                        
+                except Exception as e:
+                    print(f"  撤回文件失败 {target_path}: {e}")
+            
+            if success_count > 0:
+                print(f"撤回操作完成，成功撤回 {success_count} 个文件")
+            else:
+                print("撤回操作失败，没有文件被成功撤回")
+                return False
         
         elif last_operation["type"] == "复制":
             # 撤回复制操作：删除目标文件
@@ -581,6 +602,141 @@ def cleanup_backup_files(keep_recent=False):
         print(f"清理备份文件失败: {e}")
 
 
+def copy_files_from_csv_paths(csv_file, cut_mode=False):
+    """从CSV路径复制文件到目标文件夹
+    Args:
+        csv_file: CSV文件路径，第一列为源文件路径，第二列为目标文件夹路径
+        cut_mode: 是否为剪切模式
+    """
+    copied_files = []
+    backup_paths = []
+    source_paths = []
+    temp_backup_dir = ".temp_backup"
+    os.makedirs(temp_backup_dir, exist_ok=True)
+
+    # 生成操作ID
+    operation_id = str(uuid.uuid4())
+    operation_type = "剪切" if cut_mode else "复制"
+
+    # 读取CSV里的文件路径和目标文件夹路径
+    with open(csv_file, newline="", encoding="utf-8-sig") as f:
+        reader = csv.reader(f)
+        file_targets = []
+        for row_num, row in enumerate(reader, 1):
+            if not row:  # 跳过空行
+                continue
+                
+            if len(row) < 2:
+                print(f"警告: 第 {row_num} 行数据不完整，需要至少两列数据")
+                continue
+                
+            source_path = row[0].strip()
+            target_folder = row[1].strip()
+            file_targets.append((source_path, target_folder))
+            
+            print(f"正在处理: {source_path} -> {target_folder} ({operation_type}模式)")
+
+    # 处理文件复制
+    for source_path, target_folder in file_targets:
+        # 检查源文件是否存在
+        if not os.path.exists(source_path):
+            print(f"  警告: 源文件不存在: {source_path}")
+            continue
+            
+        if not os.path.isfile(source_path):
+            print(f"  警告: 源路径不是文件: {source_path}")
+            continue
+            
+        # 构建目标文件路径（保持原文件名）
+        file_name = os.path.basename(source_path)
+        dest_path = os.path.join(target_folder, file_name)
+        
+        print(f"  源文件: {source_path}")
+        print(f"  目标文件: {dest_path}")
+
+        # 确保目标目录存在
+        os.makedirs(target_folder, exist_ok=True)
+        
+        if cut_mode:
+            # 剪切模式：先备份再移动
+            temp_backup = os.path.join(temp_backup_dir, f"backup_{os.path.basename(source_path)}_{os.urandom(4).hex()}")
+            try:
+                # 检查源文件是否存在
+                if not os.path.exists(source_path):
+                    print(f"  警告: 源文件不存在: {source_path}")
+                    continue
+                
+                # 检查目标文件是否已存在（避免意外覆盖）
+                if os.path.exists(dest_path) and source_path != dest_path:
+                    print(f"  警告: 目标文件已存在: {dest_path}")
+                    print(f"  跳过{operation_type}操作以避免覆盖现有文件")
+                    continue
+                
+                # 1. 备份到临时位置
+                print(f"  正在创建备份: {source_path} -> {temp_backup}")
+                shutil.copy2(source_path, temp_backup)
+                print(f"  备份创建成功: {temp_backup}")
+                backup_paths.append(temp_backup)
+                source_paths.append(source_path)
+                
+                # 2. 移动文件
+                print(f"  正在移动文件: {source_path} -> {dest_path}")
+                shutil.move(source_path, dest_path)
+                copied_files.append(dest_path)
+                
+                # 验证移动是否成功
+                if os.path.exists(dest_path) and not os.path.exists(source_path):
+                    print(f"  {operation_type}成功: 文件已移动到 {dest_path}")
+                else:
+                    print(f"  警告: {operation_type}操作可能未完全成功")
+                    print(f"  源文件存在: {os.path.exists(source_path)}")
+                    print(f"  目标文件存在: {os.path.exists(dest_path)}")
+                
+            except Exception as e:
+                print(f"  {operation_type}操作发生异常: {e}")
+                # 恢复备份
+                if os.path.exists(temp_backup):
+                    try:
+                        shutil.move(temp_backup, source_path)
+                        print(f"  {operation_type}失败，已从备份恢复文件到原位置")
+                    except Exception as restore_error:
+                        print(f"  恢复备份失败: {restore_error}")
+                        print(f"  备份文件位置: {temp_backup}")
+                else:
+                    print(f"  备份文件不存在，无法恢复: {temp_backup}")
+                raise e
+                
+        else:
+            # 复制模式
+            try:
+                # 检查目标文件是否已存在（避免意外覆盖）
+                if os.path.exists(dest_path) and source_path != dest_path:
+                    print(f"  警告: 目标文件已存在: {dest_path}")
+                    print(f"  跳过复制操作以避免覆盖现有文件")
+                    continue
+                
+                shutil.copy2(source_path, dest_path)
+                copied_files.append(dest_path)
+                source_paths.append(source_path)
+                print(f"  复制成功: 文件已复制到 {dest_path}")
+                
+            except Exception as e:
+                print(f"  复制操作发生异常: {e}")
+                raise e
+
+    # 保存操作历史记录
+    if copied_files:
+        save_operation_history(
+            operation_type=operation_type,
+            source_paths=source_paths,
+            target_paths=copied_files,
+            backup_paths=backup_paths if cut_mode else None,
+            operation_id=operation_id
+        )
+
+    return copied_files
+
+
 def cleanup_old_history(max_entries=50):
     """清理旧的历史记录，防止JSON文件过大
     Args:
@@ -619,15 +775,16 @@ if __name__ == "__main__":
             print("2. 提取整个文件夹到指定目录")
             print("3. 撤回上一次操作")
             print("4. 重命名文件（原地）")
-            print("5. 退出程序")
+            print("5. 从CSV路径复制文件到目标文件夹")
+            print("6. 退出程序")
             
             while True:
-                choice = input("请输入选项 (1, 2, 3, 4 或 5): ").strip()
-                if choice in ['1', '2', '3', '4', '5']:
+                choice = input("请输入选项 (1, 2, 3, 4, 5 或 6): ").strip()
+                if choice in ['1', '2', '3', '4', '5', '6']:
                     break
                 print("无效选项，请重新输入")
             
-            if choice == '5':
+            if choice == '6':
                 print("程序退出")
                 break
                 
@@ -646,6 +803,26 @@ if __name__ == "__main__":
                     print(f"\n重命名完成，以下文件已重命名:")
                     for old_name, new_name in renamed:
                         print(f" - {old_name} -> {new_name}")
+                
+                elif choice == '5':
+                    # 从CSV路径复制文件模式
+                    csv_file = input("请输入CSV文件路径 (例如 D:\\file_paths.csv): ").strip('"')
+                    
+                    # ===== 剪切模式选择 =====
+                    cut_mode = False
+                    cut_choice = input("是否使用剪切模式？(y/n, 默认n): ").strip().lower()
+                    if cut_choice == 'y' or cut_choice == 'yes':
+                        cut_mode = True
+                        print("已启用剪切模式（文件将被移动而不是复制）")
+                    else:
+                        print("使用复制模式")
+
+                    operation = "剪切" if cut_mode else "复制"
+                    print(f"\n=== 执行从CSV路径{operation}文件功能 ===")
+                    copied = copy_files_from_csv_paths(csv_file, cut_mode)
+                    print(f"\n{operation}完成，以下文件已{operation}:")
+                    for file in copied:
+                        print(" -", file)
                 
                 else:
                     # ===== 通用输入 =====
@@ -681,9 +858,11 @@ if __name__ == "__main__":
                         for folder in copied:
                             print(" -", folder)
 
-                print("\n正在导出最终结构到:", log_csv)
-                export_structure_to_csv(target if choice != '4' else source, log_csv)
-                print("导出完成！")
+                # 对于选项5，不进行结构导出
+                if choice != '5':
+                    print("\n正在导出最终结构到:", log_csv)
+                    export_structure_to_csv(target if choice != '4' else source, log_csv)
+                    print("导出完成！")
         
         except Exception as e:
             print(f"操作过程中发生错误: {e}")
