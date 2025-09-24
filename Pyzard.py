@@ -7,7 +7,109 @@ import time
 from datetime import datetime
 
 
-def search_and_copy_files(source, target, csv_file, cut_mode=False):
+# 冲突处理模式定义
+CONFLICT_MODES = {
+    "skip": "跳过冲突文件",
+    "overwrite": "覆盖现有文件",
+    "copy": "创建副本",
+    "merge": "合并文件夹内容",
+}
+
+# 默认冲突处理模式
+DEFAULT_CONFLICT_MODE = "copy"
+
+
+def generate_copy_name(original_path):
+    """生成副本名称"""
+    directory = os.path.dirname(original_path)
+    filename = os.path.basename(original_path)
+    name, ext = os.path.splitext(filename)
+
+    # 查找可用的副本编号
+    counter = 1
+    while True:
+        new_name = f"{name}_副本{counter}{ext}"
+        new_path = os.path.join(directory, new_name)
+        if not os.path.exists(new_path):
+            return new_path
+        counter += 1
+
+
+def resolve_conflict(source_path, target_path, conflict_mode, is_folder=False):
+    """统一的冲突解决方案
+    Args:
+        source_path: 源文件/文件夹路径
+        target_path: 目标文件/文件夹路径
+        conflict_mode: 冲突处理模式 ("skip", "overwrite", "copy", "merge")
+        is_folder: 是否为文件夹
+    Returns:
+        处理后的目标路径，或None表示跳过
+    """
+    if not os.path.exists(target_path):
+        return target_path  # 无冲突
+
+    print(f"  检测到冲突: {target_path} 已存在")
+
+    if conflict_mode == "skip":
+        print(f"  跳过冲突文件: {target_path}")
+        return None
+
+    elif conflict_mode == "overwrite":
+        print(f"  覆盖现有文件: {target_path}")
+        return target_path
+
+    elif conflict_mode == "copy":
+        new_path = generate_copy_name(target_path)
+        print(f"  创建副本: {target_path} -> {new_path}")
+        return new_path
+
+    elif conflict_mode == "merge" and is_folder:
+        print(f"  合并文件夹内容: {source_path} -> {target_path}")
+        return target_path
+
+    else:
+        # 默认处理：创建副本
+        new_path = generate_copy_name(target_path)
+        print(f"  创建副本: {target_path} -> {new_path}")
+        return new_path
+
+
+def merge_folders(source_folder, target_folder):
+    """合并文件夹内容
+    Args:
+        source_folder: 源文件夹路径
+        target_folder: 目标文件夹路径
+    """
+    try:
+        # 遍历源文件夹中的所有内容
+        for item in os.listdir(source_folder):
+            source_item = os.path.join(source_folder, item)
+            target_item = os.path.join(target_folder, item)
+
+            if os.path.isdir(source_item):
+                # 如果是文件夹，递归合并
+                if not os.path.exists(target_item):
+                    shutil.copytree(source_item, target_item)
+                else:
+                    merge_folders(source_item, target_item)
+            else:
+                # 如果是文件，复制到目标文件夹
+                if not os.path.exists(target_item):
+                    shutil.copy2(source_item, target_item)
+                else:
+                    # 文件冲突，创建副本
+                    new_path = generate_copy_name(target_item)
+                    shutil.copy2(source_item, new_path)
+                    print(f"    文件冲突，创建副本: {target_item} -> {new_path}")
+
+        print(f"  文件夹合并完成: {source_folder} -> {target_folder}")
+
+    except Exception as e:
+        print(f"  合并文件夹失败: {e}")
+        raise e
+
+
+def search_and_copy_files(source, target, csv_file, cut_mode=False, conflict_mode=None):
     """搜索并复制/剪切匹配的文件"""
     copied_files = []
     renamed_files = []
@@ -16,7 +118,11 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
     temp_backup_dir = ".temp_backup"
     operation_success = False
     error_message = None
-    
+
+    # 使用默认冲突处理模式
+    if conflict_mode is None:
+        conflict_mode = DEFAULT_CONFLICT_MODE
+
     # 生成操作ID
     operation_id = str(uuid.uuid4())
     operation_type = "剪切" if cut_mode else "复制"
@@ -25,12 +131,12 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
         # 验证源目录是否存在
         if not os.path.exists(source):
             raise FileNotFoundError(f"源目录不存在: {source}")
-        
+
         # 验证目标目录是否存在，如果不存在则创建
         if not os.path.exists(target):
             print(f"目标目录不存在，正在创建: {target}")
             os.makedirs(target, exist_ok=True)
-        
+
         # 验证CSV文件是否存在
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
@@ -51,7 +157,9 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
                 file_name = row[0].strip()
                 target_name = row[1].strip() if len(row) > 1 else file_name
 
-                print(f"正在搜索文件: {file_name} -> {target_name} ({operation_type}模式)")
+                print(
+                    f"正在搜索文件: {file_name} -> {target_name} ({operation_type}模式)"
+                )
 
                 # 遍历source目录
                 found = False
@@ -68,6 +176,14 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
                             # 确保目标目录存在
                             os.makedirs(os.path.dirname(dest_file), exist_ok=True)
 
+                            # 处理冲突
+                            resolved_path = resolve_conflict(
+                                source_file, dest_file, conflict_mode, is_folder=False
+                            )
+                            if resolved_path is None:
+                                print(f"  跳过文件: {dest_file}")
+                                continue
+
                             if cut_mode:
                                 # 剪切模式：先备份再移动
                                 temp_backup = os.path.join(
@@ -80,44 +196,38 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
                                         print(f"  警告: 源文件不存在: {source_file}")
                                         continue
 
-                                    # 检查目标文件是否已存在（避免意外覆盖）
-                                    if (
-                                        os.path.exists(dest_file)
-                                        and source_file != dest_file
-                                    ):
-                                        print(f"  警告: 目标文件已存在: {dest_file}")
-                                        # 可以选择跳过或覆盖，这里选择跳过以避免数据丢失
-                                        print(
-                                            f"  跳过{operation_type}操作以避免覆盖现有文件"
-                                        )
-                                        continue
-
                                     # 1. 备份到临时位置
-                                    print(f"  正在创建备份: {source_file} -> {temp_backup}")
+                                    print(
+                                        f"  正在创建备份: {source_file} -> {temp_backup}"
+                                    )
                                     shutil.copy2(source_file, temp_backup)
                                     print(f"  备份创建成功: {temp_backup}")
                                     backup_paths.append(temp_backup)
                                     source_paths.append(source_file)
 
-                                    # 2. 移动文件（在相同目录下实际上是重命名）
-                                    print(f"  正在移动文件: {source_file} -> {dest_file}")
-                                    shutil.move(source_file, dest_file)
-                                    copied_files.append(dest_file)
+                                    # 2. 移动文件
+                                    print(
+                                        f"  正在移动文件: {source_file} -> {resolved_path}"
+                                    )
+                                    shutil.move(source_file, resolved_path)
+                                    copied_files.append(resolved_path)
 
                                     # 验证移动是否成功
-                                    if os.path.exists(dest_file) and not os.path.exists(
-                                        source_file
-                                    ):
+                                    if os.path.exists(
+                                        resolved_path
+                                    ) and not os.path.exists(source_file):
                                         print(
-                                            f"  {operation_type}成功: 文件已移动到 {dest_file}"
+                                            f"  {operation_type}成功: 文件已移动到 {resolved_path}"
                                         )
                                     else:
-                                        print(f"  警告: {operation_type}操作可能未完全成功")
+                                        print(
+                                            f"  警告: {operation_type}操作可能未完全成功"
+                                        )
                                         print(
                                             f"  源文件存在: {os.path.exists(source_file)}"
                                         )
                                         print(
-                                            f"  目标文件存在: {os.path.exists(dest_file)}"
+                                            f"  目标文件存在: {os.path.exists(resolved_path)}"
                                         )
 
                                 except Exception as e:
@@ -133,22 +243,25 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
                                             print(f"  恢复备份失败: {restore_error}")
                                             print(f"  备份文件位置: {temp_backup}")
                                     else:
-                                        print(f"  备份文件不存在，无法恢复: {temp_backup}")
+                                        print(
+                                            f"  备份文件不存在，无法恢复: {temp_backup}"
+                                        )
                                     raise e
 
                             else:
                                 # 复制模式
                                 try:
-                                    # 检查目标文件是否已存在（避免意外覆盖）
-                                    if os.path.exists(dest_file) and source_file != dest_file:
-                                        print(f"  警告: 目标文件已存在: {dest_file}")
-                                        print(f"  跳过复制操作以避免覆盖现有文件")
-                                        continue
+                                    # 如果目标路径已更改（创建了副本），需要确保目标目录存在
+                                    if resolved_path != dest_file:
+                                        os.makedirs(
+                                            os.path.dirname(resolved_path),
+                                            exist_ok=True,
+                                        )
 
-                                    shutil.copy2(source_file, dest_file)
-                                    copied_files.append(dest_file)
+                                    shutil.copy2(source_file, resolved_path)
+                                    copied_files.append(resolved_path)
                                     source_paths.append(source_file)
-                                    print(f"  复制成功: 文件已复制到 {dest_file}")
+                                    print(f"  复制成功: 文件已复制到 {resolved_path}")
                                 except Exception as e:
                                     print(f"  复制操作发生异常: {e}")
                                     raise e
@@ -181,7 +294,7 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
             backup_paths=backup_paths if cut_mode else None,
             operation_id=operation_id,
             success=operation_success,
-            error_message=error_message
+            error_message=error_message,
         )
 
     # 输出重命名信息
@@ -204,7 +317,7 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False):
     return copied_files
 
 
-def rename_files_in_place(source, csv_file):
+def rename_files_in_place(source, csv_file, conflict_mode=None):
     """在原地重命名文件（不移动到其他目录）"""
     renamed_files = []
     backup_paths = []
@@ -212,7 +325,11 @@ def rename_files_in_place(source, csv_file):
     temp_backup_dir = ".temp_backup"
     operation_success = False
     error_message = None
-    
+
+    # 使用默认冲突处理模式
+    if conflict_mode is None:
+        conflict_mode = DEFAULT_CONFLICT_MODE
+
     # 生成操作ID
     operation_id = str(uuid.uuid4())
     operation_type = "重命名"
@@ -221,7 +338,7 @@ def rename_files_in_place(source, csv_file):
         # 验证源目录是否存在
         if not os.path.exists(source):
             raise FileNotFoundError(f"源目录不存在: {source}")
-        
+
         # 验证CSV文件是否存在
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
@@ -256,6 +373,14 @@ def rename_files_in_place(source, csv_file):
                             print(f"  找到: {source_file}")
                             print(f"  正在重命名到: {dest_file}")
 
+                            # 处理冲突
+                            resolved_path = resolve_conflict(
+                                source_file, dest_file, conflict_mode, is_folder=False
+                            )
+                            if resolved_path is None:
+                                print(f"  跳过文件: {dest_file}")
+                                continue
+
                             # 重命名模式：先备份再重命名
                             temp_backup = os.path.join(
                                 temp_backup_dir,
@@ -267,12 +392,6 @@ def rename_files_in_place(source, csv_file):
                                     print(f"  警告: 源文件不存在: {source_file}")
                                     continue
 
-                                # 检查目标文件是否已存在（避免意外覆盖）
-                                if os.path.exists(dest_file) and source_file != dest_file:
-                                    print(f"  警告: 目标文件已存在: {dest_file}")
-                                    print(f"  跳过重命名操作以避免覆盖现有文件")
-                                    continue
-
                                 # 1. 备份到临时位置
                                 print(f"  正在创建备份: {source_file} -> {temp_backup}")
                                 shutil.copy2(source_file, temp_backup)
@@ -281,18 +400,26 @@ def rename_files_in_place(source, csv_file):
                                 source_paths.append(source_file)
 
                                 # 2. 重命名文件（在同一目录下）
-                                print(f"  正在重命名文件: {source_file} -> {dest_file}")
-                                shutil.move(source_file, dest_file)
+                                print(
+                                    f"  正在重命名文件: {source_file} -> {resolved_path}"
+                                )
+                                shutil.move(source_file, resolved_path)
 
                                 # 验证重命名是否成功
-                                if os.path.exists(dest_file) and not os.path.exists(
+                                if os.path.exists(resolved_path) and not os.path.exists(
                                     source_file
                                 ):
-                                    print(f"  重命名成功: 文件已重命名为 {dest_file}")
+                                    print(
+                                        f"  重命名成功: 文件已重命名为 {resolved_path}"
+                                    )
                                 else:
                                     print(f"  警告: 重命名操作可能未完全成功")
-                                    print(f"  源文件存在: {os.path.exists(source_file)}")
-                                    print(f"  目标文件存在: {os.path.exists(dest_file)}")
+                                    print(
+                                        f"  源文件存在: {os.path.exists(source_file)}"
+                                    )
+                                    print(
+                                        f"  目标文件存在: {os.path.exists(resolved_path)}"
+                                    )
 
                             except Exception as e:
                                 print(f"  重命名操作发生异常: {e}")
@@ -339,7 +466,7 @@ def rename_files_in_place(source, csv_file):
             backup_paths=backup_paths,
             operation_id=operation_id,
             success=operation_success,
-            error_message=error_message
+            error_message=error_message,
         )
 
     # 输出重命名信息
@@ -362,7 +489,7 @@ def rename_files_in_place(source, csv_file):
     return renamed_files
 
 
-def extract_entire_folder(source, target, csv_file, cut_mode=False):
+def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mode=None):
     """提取整个文件夹到指定目录（支持遍历文件树）"""
     copied_folders = []
     renamed_files = []
@@ -371,7 +498,11 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False):
     temp_backup_dir = ".temp_backup"
     operation_success = False
     error_message = None
-    
+
+    # 使用默认冲突处理模式
+    if conflict_mode is None:
+        conflict_mode = DEFAULT_CONFLICT_MODE
+
     # 生成操作ID
     operation_id = str(uuid.uuid4())
     operation_type = "剪切" if cut_mode else "复制"
@@ -380,12 +511,12 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False):
         # 验证源目录是否存在
         if not os.path.exists(source):
             raise FileNotFoundError(f"源目录不存在: {source}")
-        
+
         # 验证目标目录是否存在，如果不存在则创建
         if not os.path.exists(target):
             print(f"目标目录不存在，正在创建: {target}")
             os.makedirs(target, exist_ok=True)
-        
+
         # 验证CSV文件是否存在
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
@@ -423,16 +554,32 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False):
                         # 构建目标路径（直接放在目标目录下，不保持相对路径）
                         dest_path = os.path.join(target, target_name)
 
-                        found_folders[source_folder] = (folder_name, target_name, dest_path)
+                        found_folders[source_folder] = (
+                            folder_name,
+                            target_name,
+                            dest_path,
+                        )
                         break
 
         # 处理找到的文件夹
-        for source_folder, (folder_name, target_name, dest_path) in found_folders.items():
+        for source_folder, (
+            folder_name,
+            target_name,
+            dest_path,
+        ) in found_folders.items():
             print(f"  找到: {source_folder}")
             print(f"  正在{operation_type}到: {dest_path}")
 
             # 确保目标目录的父目录存在
             os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+
+            # 处理冲突
+            resolved_path = resolve_conflict(
+                source_folder, dest_path, conflict_mode, is_folder=True
+            )
+            if resolved_path is None:
+                print(f"  跳过文件夹: {dest_path}")
+                continue
 
             if cut_mode:
                 # 剪切模式：先备份再移动
@@ -448,8 +595,9 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False):
                     source_paths.append(source_folder)
 
                     # 2. 移动文件夹
-                    shutil.move(source_folder, dest_path)
-                    copied_folders.append(dest_path)
+                    print(f"  正在移动文件夹: {source_folder} -> {resolved_path}")
+                    shutil.move(source_folder, resolved_path)
+                    copied_folders.append(resolved_path)
 
                     print(f"  {operation_type}成功")
 
@@ -466,11 +614,27 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False):
             else:
                 # 复制模式
                 try:
-                    # 如果目标已经存在，先删除（避免冲突）
-                    if os.path.exists(dest_path):
-                        shutil.rmtree(dest_path)
-                    shutil.copytree(source_folder, dest_path)
-                    copied_folders.append(dest_path)
+                    if conflict_mode == "merge" and os.path.exists(resolved_path):
+                        # 合并模式：合并文件夹内容
+                        print(
+                            f"  正在合并文件夹内容: {source_folder} -> {resolved_path}"
+                        )
+                        merge_folders(source_folder, resolved_path)
+                    else:
+                        # 其他模式：复制文件夹
+                        if (
+                            os.path.exists(resolved_path)
+                            and conflict_mode == "overwrite"
+                        ):
+                            # 覆盖模式：先删除现有文件夹
+                            shutil.rmtree(resolved_path)
+                        elif os.path.exists(resolved_path) and conflict_mode == "copy":
+                            # 副本模式：resolved_path已经是副本路径，直接复制
+                            pass
+
+                        shutil.copytree(source_folder, resolved_path)
+
+                    copied_folders.append(resolved_path)
                     source_paths.append(source_folder)
                     print(f"  {operation_type}成功")
                 except Exception as e:
@@ -497,7 +661,7 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False):
             backup_paths=backup_paths if cut_mode else None,
             operation_id=operation_id,
             success=operation_success,
-            error_message=error_message
+            error_message=error_message,
         )
 
     # 检查是否有未找到的文件夹
@@ -553,8 +717,13 @@ def export_structure_to_csv(target, log_csv):
 
 
 def save_operation_history(
-    operation_type, source_paths, target_paths, backup_paths=None, operation_id=None,
-    success=True, error_message=None
+    operation_type,
+    source_paths,
+    target_paths,
+    backup_paths=None,
+    operation_id=None,
+    success=True,
+    error_message=None,
 ):
     """保存操作历史记录"""
     history_file = ".operation_history.json"
@@ -646,7 +815,7 @@ def undo_last_operation():
                         elif os.path.isdir(backup_path):
                             shutil.move(backup_path, source_path)
 
-                        # 删除目标文件
+                        # 删除目标文件（包括副本文件）
                         if os.path.exists(target_path) and target_path != source_path:
                             if os.path.isfile(target_path):
                                 os.remove(target_path)
@@ -668,16 +837,30 @@ def undo_last_operation():
                 return False
 
         elif last_operation["type"] == "复制":
-            # 撤回复制操作：删除目标文件
+            # 撤回复制操作：删除目标文件（包括副本文件）
+            success_count = 0
             for target_path in last_operation["target_paths"]:
-                if os.path.exists(target_path):
-                    if os.path.isfile(target_path):
-                        os.remove(target_path)
-                    elif os.path.isdir(target_path):
-                        shutil.rmtree(target_path)
+                try:
+                    if os.path.exists(target_path):
+                        if os.path.isfile(target_path):
+                            os.remove(target_path)
+                        elif os.path.isdir(target_path):
+                            shutil.rmtree(target_path)
+                        success_count += 1
+                        print(f"  已删除: {target_path}")
+                    else:
+                        print(f"  警告: 目标文件不存在: {target_path}")
+                except Exception as e:
+                    print(f"  删除文件失败 {target_path}: {e}")
+
+            if success_count > 0:
+                print(f"撤回操作完成，成功删除 {success_count} 个文件")
+            else:
+                print("撤回操作失败，没有文件被成功删除")
+                return False
 
         elif last_operation["type"] == "重命名":
-            # 撤回重命名操作：从备份恢复，删除重命名后的文件
+            # 撤回重命名操作：从备份恢复，删除重命名后的文件（包括副本文件）
             success_count = 0
             for i, (backup_path, target_path) in enumerate(
                 zip(last_operation["backup_paths"], last_operation["target_paths"])
@@ -695,7 +878,7 @@ def undo_last_operation():
                         elif os.path.isdir(backup_path):
                             shutil.move(backup_path, source_path)
 
-                        # 删除重命名后的文件
+                        # 删除重命名后的文件（包括副本文件）
                         if os.path.exists(target_path) and target_path != source_path:
                             if os.path.isfile(target_path):
                                 os.remove(target_path)
@@ -779,11 +962,12 @@ def cleanup_backup_files(keep_recent=False):
         print(f"清理备份文件失败: {e}")
 
 
-def copy_files_from_csv_paths(csv_file, cut_mode=False):
+def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
     """从CSV路径复制文件到目标文件夹
     Args:
         csv_file: CSV文件路径，第一列为源文件路径，第二列为目标文件夹路径
         cut_mode: 是否为剪切模式
+        conflict_mode: 冲突处理模式
     """
     copied_files = []
     backup_paths = []
@@ -791,7 +975,11 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
     temp_backup_dir = ".temp_backup"
     operation_success = False
     error_message = None
-    
+
+    # 使用默认冲突处理模式
+    if conflict_mode is None:
+        conflict_mode = DEFAULT_CONFLICT_MODE
+
     # 生成操作ID
     operation_id = str(uuid.uuid4())
     operation_type = "剪切" if cut_mode else "复制"
@@ -819,7 +1007,9 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
                 target_folder = row[1].strip()
                 file_targets.append((source_path, target_folder))
 
-                print(f"正在处理: {source_path} -> {target_folder} ({operation_type}模式)")
+                print(
+                    f"正在处理: {source_path} -> {target_folder} ({operation_type}模式)"
+                )
 
         # 处理文件复制
         for source_path, target_folder in file_targets:
@@ -842,6 +1032,14 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
             # 确保目标目录存在
             os.makedirs(target_folder, exist_ok=True)
 
+            # 处理冲突
+            resolved_path = resolve_conflict(
+                source_path, dest_path, conflict_mode, is_folder=False
+            )
+            if resolved_path is None:
+                print(f"  跳过文件: {dest_path}")
+                continue
+
             if cut_mode:
                 # 剪切模式：先备份再移动
                 temp_backup = os.path.join(
@@ -854,12 +1052,6 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
                         print(f"  警告: 源文件不存在: {source_path}")
                         continue
 
-                    # 检查目标文件是否已存在（避免意外覆盖）
-                    if os.path.exists(dest_path) and source_path != dest_path:
-                        print(f"  警告: 目标文件已存在: {dest_path}")
-                        print(f"  跳过{operation_type}操作以避免覆盖现有文件")
-                        continue
-
                     # 1. 备份到临时位置
                     print(f"  正在创建备份: {source_path} -> {temp_backup}")
                     shutil.copy2(source_path, temp_backup)
@@ -868,17 +1060,19 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
                     source_paths.append(source_path)
 
                     # 2. 移动文件
-                    print(f"  正在移动文件: {source_path} -> {dest_path}")
-                    shutil.move(source_path, dest_path)
-                    copied_files.append(dest_path)
+                    print(f"  正在移动文件: {source_path} -> {resolved_path}")
+                    shutil.move(source_path, resolved_path)
+                    copied_files.append(resolved_path)
 
                     # 验证移动是否成功
-                    if os.path.exists(dest_path) and not os.path.exists(source_path):
-                        print(f"  {operation_type}成功: 文件已移动到 {dest_path}")
+                    if os.path.exists(resolved_path) and not os.path.exists(
+                        source_path
+                    ):
+                        print(f"  {operation_type}成功: 文件已移动到 {resolved_path}")
                     else:
                         print(f"  警告: {operation_type}操作可能未完全成功")
                         print(f"  源文件存在: {os.path.exists(source_path)}")
-                        print(f"  目标文件存在: {os.path.exists(dest_path)}")
+                        print(f"  目标文件存在: {os.path.exists(resolved_path)}")
 
                 except Exception as e:
                     print(f"  {operation_type}操作发生异常: {e}")
@@ -897,16 +1091,14 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
             else:
                 # 复制模式
                 try:
-                    # 检查目标文件是否已存在（避免意外覆盖）
-                    if os.path.exists(dest_path) and source_path != dest_path:
-                        print(f"  警告: 目标文件已存在: {dest_path}")
-                        print(f"  跳过复制操作以避免覆盖现有文件")
-                        continue
+                    # 如果目标路径已更改（创建了副本），需要确保目标目录存在
+                    if resolved_path != dest_path:
+                        os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
 
-                    shutil.copy2(source_path, dest_path)
-                    copied_files.append(dest_path)
+                    shutil.copy2(source_path, resolved_path)
+                    copied_files.append(resolved_path)
                     source_paths.append(source_path)
-                    print(f"  复制成功: 文件已复制到 {dest_path}")
+                    print(f"  复制成功: 文件已复制到 {resolved_path}")
 
                 except Exception as e:
                     print(f"  复制操作发生异常: {e}")
@@ -928,7 +1120,7 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False):
             backup_paths=backup_paths if cut_mode else None,
             operation_id=operation_id,
             success=operation_success,
-            error_message=error_message
+            error_message=error_message,
         )
 
     if operation_success:
@@ -1109,6 +1301,22 @@ def cleanup_old_history(max_entries=5000):
         print(f"清理历史记录失败: {e}")
 
 
+def select_conflict_mode():
+    """让用户选择冲突处理模式"""
+    print("\n请选择冲突处理模式:")
+    for key, description in CONFLICT_MODES.items():
+        print(f"  {key}: {description}")
+
+    while True:
+        mode = input(f"请输入模式代码 (默认 {DEFAULT_CONFLICT_MODE}): ").strip().lower()
+        if not mode:
+            return DEFAULT_CONFLICT_MODE
+        elif mode in CONFLICT_MODES:
+            return mode
+        else:
+            print("无效的模式代码，请重新输入")
+
+
 if __name__ == "__main__":
     while True:
         try:
@@ -1137,6 +1345,10 @@ if __name__ == "__main__":
                 # 撤回操作
                 undo_last_operation()
             else:
+                # 选择冲突处理模式
+                conflict_mode = select_conflict_mode()
+                print(f"已选择冲突处理模式: {CONFLICT_MODES[conflict_mode]}")
+
                 if choice == "4":
                     # 重命名模式
                     source = input("请输入源路径 (例如 D:\\SourcePath): ").strip('"')
@@ -1148,7 +1360,7 @@ if __name__ == "__main__":
                     ).strip('"')
 
                     print("\n=== 执行重命名文件功能 ===")
-                    renamed = rename_files_in_place(source, csv_file)
+                    renamed = rename_files_in_place(source, csv_file, conflict_mode)
                     print(f"\n重命名完成，以下文件已重命名:")
                     for old_name, new_name in renamed:
                         print(f" - {old_name} -> {new_name}")
@@ -1172,7 +1384,9 @@ if __name__ == "__main__":
 
                     operation = "剪切" if cut_mode else "复制"
                     print(f"\n=== 执行从CSV路径{operation}文件功能 ===")
-                    copied = copy_files_from_csv_paths(csv_file, cut_mode)
+                    copied = copy_files_from_csv_paths(
+                        csv_file, cut_mode, conflict_mode
+                    )
                     print(f"\n{operation}完成，以下文件已{operation}:")
                     for file in copied:
                         print(" -", file)
@@ -1233,7 +1447,7 @@ if __name__ == "__main__":
                         operation = "剪切" if cut_mode else "复制"
                         print(f"\n=== 执行搜索并{operation}文件功能 ===")
                         copied = search_and_copy_files(
-                            source, target, csv_file, cut_mode
+                            source, target, csv_file, cut_mode, conflict_mode
                         )
                         print(f"\n{operation}完成，以下文件已{operation}:")
                         for file in copied:
@@ -1242,7 +1456,7 @@ if __name__ == "__main__":
                         operation = "剪切" if cut_mode else "复制"
                         print(f"\n=== 执行提取整个文件夹功能 ({operation}模式) ===")
                         copied = extract_entire_folder(
-                            source, target, csv_file, cut_mode
+                            source, target, csv_file, cut_mode, conflict_mode
                         )
                         print(f"\n{operation}完成，以下文件夹已{operation}:")
                         for folder in copied:
