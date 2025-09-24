@@ -1,0 +1,86 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        
+
+        {
+            "name": "Pyzard 完整测试",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
+            "args": ["--full"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "Pyzard测试",
+                "order": 1
+            }
+        },
+        {
+            "name": "Pyzard 快速测试",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
+            "args": ["--quick"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "Pyzard测试",
+                "order": 2
+            }
+        },
+        {
+            "name": "Pyzard 编码测试",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
+            "args": ["--encoding"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "Pyzard测试",
+                "order": 3
+            }
+        },
+        {
+            "name": "Pyzard 性能测试",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
+            "args": ["--performance"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "Pyzard测试",
+                "order": 4
+            }
+        },
+        {
+            "name": "运行 Pyzard 主程序",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/Pyzard.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "presentation": {
+                "group": "Pyzard程序",
+                "order": 1
+            }
+        }
+    ]
+}

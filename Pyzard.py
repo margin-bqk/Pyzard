@@ -19,6 +19,77 @@ CONFLICT_MODES = {
 DEFAULT_CONFLICT_MODE = "copy"
 
 
+def read_csv_with_encoding_detection(csv_path, expected_columns=2):
+    """
+    读取CSV文件，自动识别编码，返回业务函数可用的简单数据结构
+
+    Args:
+        csv_path: CSV文件路径
+        expected_columns: 期望的列数（默认2列：源名称，目标名称）
+
+    Returns:
+        dict: 包含处理后的数据和元信息
+    """
+    # 支持的编码尝试顺序
+    encodings = ["utf-8-sig", "gbk", "gb2312", "utf-8", "latin-1"]
+
+    for encoding in encodings:
+        try:
+            with open(csv_path, "r", encoding=encoding, newline="") as f:
+                reader = csv.reader(f)
+
+                # 读取并处理数据
+                rows = []
+                for i, row in enumerate(reader, 1):
+                    if not row:  # 跳过空行
+                        continue
+
+                    # 处理列数不足的情况
+                    if len(row) < expected_columns:
+                        # 如果只有一列，目标名称使用源名称
+                        source_name = row[0].strip()
+                        if len(row) == 1:
+                            target_name = source_name
+                        else:
+                            target_name = (
+                                row[1].strip() if len(row) > 1 else source_name
+                            )
+                    else:
+                        source_name = row[0].strip()
+                        target_name = row[1].strip()
+
+                    rows.append(
+                        {
+                            "source_name": source_name,
+                            "target_name": target_name,
+                            "original_row": row,
+                            "row_number": i,
+                        }
+                    )
+
+                return {
+                    "success": True,
+                    "data": rows,
+                    "encoding": encoding,
+                    "total_rows": len(rows),
+                    "message": f"成功读取 {len(rows)} 行数据，使用编码: {encoding}",
+                }
+
+        except UnicodeDecodeError:
+            continue
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"读取文件时发生错误: {str(e)}",
+                "encoding": encoding if "encoding" in locals() else "unknown",
+            }
+
+    return {
+        "success": False,
+        "error": f"无法解码文件 {csv_path}，尝试的编码: {encodings}",
+    }
+
+
 def generate_copy_name(original_path):
     """生成副本名称"""
     directory = os.path.dirname(original_path)
@@ -141,142 +212,134 @@ def search_and_copy_files(source, target, csv_file, cut_mode=False, conflict_mod
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
 
+        # 使用新的CSV读取函数
+        csv_result = read_csv_with_encoding_detection(csv_file, expected_columns=2)
+        if not csv_result["success"]:
+            raise FileNotFoundError(f"读取CSV文件失败: {csv_result['error']}")
+
+        print(
+            f"CSV文件读取成功，使用编码: {csv_result['encoding']}，共 {csv_result['total_rows']} 行数据"
+        )
+
         os.makedirs(temp_backup_dir, exist_ok=True)
 
-        # 读取CSV里的文件名和目标替换名
-        with open(csv_file, newline="", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            for row_num, row in enumerate(reader, 1):
-                if not row:  # 跳过空行
-                    continue
+        # 处理CSV数据
+        for item in csv_result["data"]:
+            file_name = item["source_name"]
+            target_name = item["target_name"]
 
-                if len(row) < 1:
-                    print(f"警告: 第 {row_num} 行数据不完整，需要至少一列数据")
-                    continue
+            print(f"正在搜索文件: {file_name} -> {target_name} ({operation_type}模式)")
 
-                file_name = row[0].strip()
-                target_name = row[1].strip() if len(row) > 1 else file_name
+            # 遍历source目录
+            found = False
+            for root, dirs, files in os.walk(source):
+                for file in files:
+                    if file.lower() == file_name.lower():
+                        # 构建源文件路径和目标文件路径
+                        source_file = os.path.join(root, file)
+                        dest_file = os.path.join(target, target_name)
 
-                print(
-                    f"正在搜索文件: {file_name} -> {target_name} ({operation_type}模式)"
-                )
+                        print(f"  找到: {source_file}")
+                        print(f"  正在{operation_type}到: {dest_file}")
 
-                # 遍历source目录
-                found = False
-                for root, dirs, files in os.walk(source):
-                    for file in files:
-                        if file.lower() == file_name.lower():
-                            # 构建源文件路径和目标文件路径
-                            source_file = os.path.join(root, file)
-                            dest_file = os.path.join(target, target_name)
+                        # 确保目标目录存在
+                        os.makedirs(os.path.dirname(dest_file), exist_ok=True)
 
-                            print(f"  找到: {source_file}")
-                            print(f"  正在{operation_type}到: {dest_file}")
+                        # 处理冲突
+                        resolved_path = resolve_conflict(
+                            source_file, dest_file, conflict_mode, is_folder=False
+                        )
+                        if resolved_path is None:
+                            print(f"  跳过文件: {dest_file}")
+                            continue
 
-                            # 确保目标目录存在
-                            os.makedirs(os.path.dirname(dest_file), exist_ok=True)
-
-                            # 处理冲突
-                            resolved_path = resolve_conflict(
-                                source_file, dest_file, conflict_mode, is_folder=False
+                        if cut_mode:
+                            # 剪切模式：先备份再移动
+                            temp_backup = os.path.join(
+                                temp_backup_dir,
+                                f"backup_{os.path.basename(source_file)}_{os.urandom(4).hex()}",
                             )
-                            if resolved_path is None:
-                                print(f"  跳过文件: {dest_file}")
-                                continue
+                            try:
+                                # 检查源文件是否存在
+                                if not os.path.exists(source_file):
+                                    print(f"  警告: 源文件不存在: {source_file}")
+                                    continue
 
-                            if cut_mode:
-                                # 剪切模式：先备份再移动
-                                temp_backup = os.path.join(
-                                    temp_backup_dir,
-                                    f"backup_{os.path.basename(source_file)}_{os.urandom(4).hex()}",
+                                # 1. 备份到临时位置
+                                print(f"  正在创建备份: {source_file} -> {temp_backup}")
+                                shutil.copy2(source_file, temp_backup)
+                                print(f"  备份创建成功: {temp_backup}")
+                                backup_paths.append(temp_backup)
+                                source_paths.append(source_file)
+
+                                # 2. 移动文件
+                                print(
+                                    f"  正在移动文件: {source_file} -> {resolved_path}"
                                 )
-                                try:
-                                    # 检查源文件是否存在
-                                    if not os.path.exists(source_file):
-                                        print(f"  警告: 源文件不存在: {source_file}")
-                                        continue
+                                shutil.move(source_file, resolved_path)
+                                copied_files.append(resolved_path)
 
-                                    # 1. 备份到临时位置
+                                # 验证移动是否成功
+                                if os.path.exists(resolved_path) and not os.path.exists(
+                                    source_file
+                                ):
                                     print(
-                                        f"  正在创建备份: {source_file} -> {temp_backup}"
+                                        f"  {operation_type}成功: 文件已移动到 {resolved_path}"
                                     )
-                                    shutil.copy2(source_file, temp_backup)
-                                    print(f"  备份创建成功: {temp_backup}")
-                                    backup_paths.append(temp_backup)
-                                    source_paths.append(source_file)
-
-                                    # 2. 移动文件
+                                else:
+                                    print(f"  警告: {operation_type}操作可能未完全成功")
                                     print(
-                                        f"  正在移动文件: {source_file} -> {resolved_path}"
+                                        f"  源文件存在: {os.path.exists(source_file)}"
                                     )
-                                    shutil.move(source_file, resolved_path)
-                                    copied_files.append(resolved_path)
+                                    print(
+                                        f"  目标文件存在: {os.path.exists(resolved_path)}"
+                                    )
 
-                                    # 验证移动是否成功
-                                    if os.path.exists(
-                                        resolved_path
-                                    ) and not os.path.exists(source_file):
+                            except Exception as e:
+                                print(f"  {operation_type}操作发生异常: {e}")
+                                # 恢复备份
+                                if os.path.exists(temp_backup):
+                                    try:
+                                        shutil.move(temp_backup, source_file)
                                         print(
-                                            f"  {operation_type}成功: 文件已移动到 {resolved_path}"
+                                            f"  {operation_type}失败，已从备份恢复文件到原位置"
                                         )
-                                    else:
-                                        print(
-                                            f"  警告: {operation_type}操作可能未完全成功"
-                                        )
-                                        print(
-                                            f"  源文件存在: {os.path.exists(source_file)}"
-                                        )
-                                        print(
-                                            f"  目标文件存在: {os.path.exists(resolved_path)}"
-                                        )
+                                    except Exception as restore_error:
+                                        print(f"  恢复备份失败: {restore_error}")
+                                        print(f"  备份文件位置: {temp_backup}")
+                                else:
+                                    print(f"  备份文件不存在，无法恢复: {temp_backup}")
+                                raise e
 
-                                except Exception as e:
-                                    print(f"  {operation_type}操作发生异常: {e}")
-                                    # 恢复备份
-                                    if os.path.exists(temp_backup):
-                                        try:
-                                            shutil.move(temp_backup, source_file)
-                                            print(
-                                                f"  {operation_type}失败，已从备份恢复文件到原位置"
-                                            )
-                                        except Exception as restore_error:
-                                            print(f"  恢复备份失败: {restore_error}")
-                                            print(f"  备份文件位置: {temp_backup}")
-                                    else:
-                                        print(
-                                            f"  备份文件不存在，无法恢复: {temp_backup}"
-                                        )
-                                    raise e
+                        else:
+                            # 复制模式
+                            try:
+                                # 如果目标路径已更改（创建了副本），需要确保目标目录存在
+                                if resolved_path != dest_file:
+                                    os.makedirs(
+                                        os.path.dirname(resolved_path),
+                                        exist_ok=True,
+                                    )
 
-                            else:
-                                # 复制模式
-                                try:
-                                    # 如果目标路径已更改（创建了副本），需要确保目标目录存在
-                                    if resolved_path != dest_file:
-                                        os.makedirs(
-                                            os.path.dirname(resolved_path),
-                                            exist_ok=True,
-                                        )
+                                shutil.copy2(source_file, resolved_path)
+                                copied_files.append(resolved_path)
+                                source_paths.append(source_file)
+                                print(f"  复制成功: 文件已复制到 {resolved_path}")
+                            except Exception as e:
+                                print(f"  复制操作发生异常: {e}")
+                                raise e
 
-                                    shutil.copy2(source_file, resolved_path)
-                                    copied_files.append(resolved_path)
-                                    source_paths.append(source_file)
-                                    print(f"  复制成功: 文件已复制到 {resolved_path}")
-                                except Exception as e:
-                                    print(f"  复制操作发生异常: {e}")
-                                    raise e
+                        # 如果目标名称与原名称不同，记录重命名信息
+                        if target_name != file_name:
+                            renamed_files.append((file_name, target_name))
 
-                            # 如果目标名称与原名称不同，记录重命名信息
-                            if target_name != file_name:
-                                renamed_files.append((file_name, target_name))
-
-                            found = True
-                            break
-                    if found:
+                        found = True
                         break
+                if found:
+                    break
 
-                if not found:
-                    print(f"  警告: 文件 '{file_name}' 在源路径中未找到")
+            if not found:
+                print(f"  警告: 文件 '{file_name}' 在源路径中未找到")
 
         operation_success = True
 
@@ -343,109 +406,103 @@ def rename_files_in_place(source, csv_file, conflict_mode=None):
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
 
+        # 使用新的CSV读取函数
+        csv_result = read_csv_with_encoding_detection(csv_file, expected_columns=2)
+        if not csv_result["success"]:
+            raise FileNotFoundError(f"读取CSV文件失败: {csv_result['error']}")
+
+        print(
+            f"CSV文件读取成功，使用编码: {csv_result['encoding']}，共 {csv_result['total_rows']} 行数据"
+        )
+
         os.makedirs(temp_backup_dir, exist_ok=True)
 
-        # 读取CSV里的文件名和目标替换名
-        with open(csv_file, newline="", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            for row_num, row in enumerate(reader, 1):
-                if not row:  # 跳过空行
-                    continue
+        # 处理CSV数据
+        for item in csv_result["data"]:
+            file_name = item["source_name"]
+            target_name = item["target_name"]
 
-                if len(row) < 1:
-                    print(f"警告: 第 {row_num} 行数据不完整，需要至少一列数据")
-                    continue
+            print(f"正在搜索文件: {file_name} -> {target_name} (重命名模式)")
 
-                file_name = row[0].strip()
-                target_name = row[1].strip() if len(row) > 1 else file_name
+            # 遍历source目录
+            found = False
+            for root, dirs, files in os.walk(source):
+                for file in files:
+                    if file.lower() == file_name.lower():
+                        # 构建源文件路径和目标文件路径（在同一目录）
+                        source_file = os.path.join(root, file)
+                        dest_file = os.path.join(root, target_name)
 
-                print(f"正在搜索文件: {file_name} -> {target_name} (重命名模式)")
+                        print(f"  找到: {source_file}")
+                        print(f"  正在重命名到: {dest_file}")
 
-                # 遍历source目录
-                found = False
-                for root, dirs, files in os.walk(source):
-                    for file in files:
-                        if file.lower() == file_name.lower():
-                            # 构建源文件路径和目标文件路径（在同一目录）
-                            source_file = os.path.join(root, file)
-                            dest_file = os.path.join(root, target_name)
+                        # 处理冲突
+                        resolved_path = resolve_conflict(
+                            source_file, dest_file, conflict_mode, is_folder=False
+                        )
+                        if resolved_path is None:
+                            print(f"  跳过文件: {dest_file}")
+                            continue
 
-                            print(f"  找到: {source_file}")
-                            print(f"  正在重命名到: {dest_file}")
-
-                            # 处理冲突
-                            resolved_path = resolve_conflict(
-                                source_file, dest_file, conflict_mode, is_folder=False
-                            )
-                            if resolved_path is None:
-                                print(f"  跳过文件: {dest_file}")
+                        # 重命名模式：先备份再重命名
+                        temp_backup = os.path.join(
+                            temp_backup_dir,
+                            f"backup_{os.path.basename(source_file)}_{os.urandom(4).hex()}",
+                        )
+                        try:
+                            # 检查源文件是否存在
+                            if not os.path.exists(source_file):
+                                print(f"  警告: 源文件不存在: {source_file}")
                                 continue
 
-                            # 重命名模式：先备份再重命名
-                            temp_backup = os.path.join(
-                                temp_backup_dir,
-                                f"backup_{os.path.basename(source_file)}_{os.urandom(4).hex()}",
-                            )
-                            try:
-                                # 检查源文件是否存在
-                                if not os.path.exists(source_file):
-                                    print(f"  警告: 源文件不存在: {source_file}")
-                                    continue
+                            # 1. 备份到临时位置
+                            print(f"  正在创建备份: {source_file} -> {temp_backup}")
+                            shutil.copy2(source_file, temp_backup)
+                            print(f"  备份创建成功: {temp_backup}")
+                            backup_paths.append(temp_backup)
+                            source_paths.append(source_file)
 
-                                # 1. 备份到临时位置
-                                print(f"  正在创建备份: {source_file} -> {temp_backup}")
-                                shutil.copy2(source_file, temp_backup)
-                                print(f"  备份创建成功: {temp_backup}")
-                                backup_paths.append(temp_backup)
-                                source_paths.append(source_file)
+                            # 2. 重命名文件（在同一目录下）
+                            print(f"  正在重命名文件: {source_file} -> {resolved_path}")
+                            shutil.move(source_file, resolved_path)
 
-                                # 2. 重命名文件（在同一目录下）
+                            # 验证重命名是否成功
+                            if os.path.exists(resolved_path) and not os.path.exists(
+                                source_file
+                            ):
+                                print(f"  重命名成功: 文件已重命名为 {resolved_path}")
+                            else:
+                                print(f"  警告: 重命名操作可能未完全成功")
+                                print(f"  源文件存在: {os.path.exists(source_file)}")
                                 print(
-                                    f"  正在重命名文件: {source_file} -> {resolved_path}"
+                                    f"  目标文件存在: {os.path.exists(resolved_path)}"
                                 )
-                                shutil.move(source_file, resolved_path)
 
-                                # 验证重命名是否成功
-                                if os.path.exists(resolved_path) and not os.path.exists(
-                                    source_file
-                                ):
-                                    print(
-                                        f"  重命名成功: 文件已重命名为 {resolved_path}"
-                                    )
-                                else:
-                                    print(f"  警告: 重命名操作可能未完全成功")
-                                    print(
-                                        f"  源文件存在: {os.path.exists(source_file)}"
-                                    )
-                                    print(
-                                        f"  目标文件存在: {os.path.exists(resolved_path)}"
-                                    )
+                        except Exception as e:
+                            print(f"  重命名操作发生异常: {e}")
+                            # 恢复备份
+                            if os.path.exists(temp_backup):
+                                try:
+                                    shutil.move(temp_backup, source_file)
+                                    print(f"  重命名失败，已从备份恢复文件到原位置")
+                                except Exception as restore_error:
+                                    print(f"  恢复备份失败: {restore_error}")
+                                    print(f"  备份文件位置: {temp_backup}")
+                            else:
+                                print(f"  备份文件不存在，无法恢复: {temp_backup}")
+                            raise e
 
-                            except Exception as e:
-                                print(f"  重命名操作发生异常: {e}")
-                                # 恢复备份
-                                if os.path.exists(temp_backup):
-                                    try:
-                                        shutil.move(temp_backup, source_file)
-                                        print(f"  重命名失败，已从备份恢复文件到原位置")
-                                    except Exception as restore_error:
-                                        print(f"  恢复备份失败: {restore_error}")
-                                        print(f"  备份文件位置: {temp_backup}")
-                                else:
-                                    print(f"  备份文件不存在，无法恢复: {temp_backup}")
-                                raise e
+                        # 记录重命名信息
+                        if target_name != file_name:
+                            renamed_files.append((file_name, target_name))
 
-                            # 记录重命名信息
-                            if target_name != file_name:
-                                renamed_files.append((file_name, target_name))
-
-                            found = True
-                            break
-                    if found:
+                        found = True
                         break
+                if found:
+                    break
 
-                if not found:
-                    print(f"  警告: 文件 '{file_name}' 在源路径中未找到")
+            if not found:
+                print(f"  警告: 文件 '{file_name}' 在源路径中未找到")
 
         operation_success = True
 
@@ -521,27 +578,27 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mod
         if not os.path.exists(csv_file):
             raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
 
+        # 使用新的CSV读取函数
+        csv_result = read_csv_with_encoding_detection(csv_file, expected_columns=2)
+        if not csv_result["success"]:
+            raise FileNotFoundError(f"读取CSV文件失败: {csv_result['error']}")
+
+        print(
+            f"CSV文件读取成功，使用编码: {csv_result['encoding']}，共 {csv_result['total_rows']} 行数据"
+        )
+
         os.makedirs(temp_backup_dir, exist_ok=True)
 
-        # 读取CSV里的文件夹名字和目标替换名
-        with open(csv_file, newline="", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            folder_targets = []
-            for row_num, row in enumerate(reader, 1):
-                if not row:  # 跳过空行
-                    continue
+        # 处理CSV数据
+        folder_targets = []
+        for item in csv_result["data"]:
+            folder_name = item["source_name"]
+            target_name = item["target_name"]
+            folder_targets.append((folder_name, target_name))
 
-                if len(row) < 1:
-                    print(f"警告: 第 {row_num} 行数据不完整，需要至少一列数据")
-                    continue
-
-                folder_name = row[0].strip()
-                target_name = row[1].strip() if len(row) > 1 else folder_name
-                folder_targets.append((folder_name, target_name))
-
-                print(
-                    f"正在搜索文件夹: {folder_name} -> {target_name} ({operation_type}模式)"
-                )
+            print(
+                f"正在搜索文件夹: {folder_name} -> {target_name} ({operation_type}模式)"
+            )
 
         # 遍历整个源目录树来查找文件夹
         found_folders = {}
@@ -688,6 +745,175 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mod
         print(f"\n{operation_type}操作失败")
 
     return copied_folders
+
+
+def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
+    """从CSV路径复制文件到目标文件夹
+    Args:
+        csv_file: CSV文件路径，第一列为源文件路径，第二列为目标文件夹路径
+        cut_mode: 是否为剪切模式
+        conflict_mode: 冲突处理模式
+    """
+    copied_files = []
+    backup_paths = []
+    source_paths = []
+    temp_backup_dir = ".temp_backup"
+    operation_success = False
+    error_message = None
+
+    # 使用默认冲突处理模式
+    if conflict_mode is None:
+        conflict_mode = DEFAULT_CONFLICT_MODE
+
+    # 生成操作ID
+    operation_id = str(uuid.uuid4())
+    operation_type = "剪切" if cut_mode else "复制"
+
+    try:
+        # 验证CSV文件是否存在
+        if not os.path.exists(csv_file):
+            raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
+
+        # 使用新的CSV读取函数
+        csv_result = read_csv_with_encoding_detection(csv_file, expected_columns=2)
+        if not csv_result["success"]:
+            raise FileNotFoundError(f"读取CSV文件失败: {csv_result['error']}")
+
+        print(
+            f"CSV文件读取成功，使用编码: {csv_result['encoding']}，共 {csv_result['total_rows']} 行数据"
+        )
+
+        os.makedirs(temp_backup_dir, exist_ok=True)
+
+        # 处理CSV数据
+        for item in csv_result["data"]:
+            source_path = item["source_name"]
+            target_folder = item["target_name"]
+
+            print(f"正在处理: {source_path} -> {target_folder} ({operation_type}模式)")
+
+            # 检查源文件是否存在
+            if not os.path.exists(source_path):
+                print(f"  警告: 源文件不存在: {source_path}")
+                continue
+
+            if not os.path.isfile(source_path):
+                print(f"  警告: 源路径不是文件: {source_path}")
+                continue
+
+            # 构建目标文件路径（保持原文件名）
+            file_name = os.path.basename(source_path)
+            dest_path = os.path.join(target_folder, file_name)
+
+            print(f"  源文件: {source_path}")
+            print(f"  目标文件: {dest_path}")
+
+            # 确保目标目录存在
+            os.makedirs(target_folder, exist_ok=True)
+
+            # 处理冲突
+            resolved_path = resolve_conflict(
+                source_path, dest_path, conflict_mode, is_folder=False
+            )
+            if resolved_path is None:
+                print(f"  跳过文件: {dest_path}")
+                continue
+
+            if cut_mode:
+                # 剪切模式：先备份再移动
+                temp_backup = os.path.join(
+                    temp_backup_dir,
+                    f"backup_{os.path.basename(source_path)}_{os.urandom(4).hex()}",
+                )
+                try:
+                    # 检查源文件是否存在
+                    if not os.path.exists(source_path):
+                        print(f"  警告: 源文件不存在: {source_path}")
+                        continue
+
+                    # 1. 备份到临时位置
+                    print(f"  正在创建备份: {source_path} -> {temp_backup}")
+                    shutil.copy2(source_path, temp_backup)
+                    print(f"  备份创建成功: {temp_backup}")
+                    backup_paths.append(temp_backup)
+                    source_paths.append(source_path)
+
+                    # 2. 移动文件
+                    print(f"  正在移动文件: {source_path} -> {resolved_path}")
+                    shutil.move(source_path, resolved_path)
+                    copied_files.append(resolved_path)
+
+                    # 验证移动是否成功
+                    if os.path.exists(resolved_path) and not os.path.exists(
+                        source_path
+                    ):
+                        print(f"  {operation_type}成功: 文件已移动到 {resolved_path}")
+                    else:
+                        print(f"  警告: {operation_type}操作可能未完全成功")
+                        print(f"  源文件存在: {os.path.exists(source_path)}")
+                        print(f"  目标文件存在: {os.path.exists(resolved_path)}")
+
+                except Exception as e:
+                    print(f"  {operation_type}操作发生异常: {e}")
+                    # 恢复备份
+                    if os.path.exists(temp_backup):
+                        try:
+                            shutil.move(temp_backup, source_path)
+                            print(f"  {operation_type}失败，已从备份恢复文件到原位置")
+                        except Exception as restore_error:
+                            print(f"  恢复备份失败: {restore_error}")
+                            print(f"  备份文件位置: {temp_backup}")
+                    else:
+                        print(f"  备份文件不存在，无法恢复: {temp_backup}")
+                    raise e
+
+            else:
+                # 复制模式
+                try:
+                    # 如果目标路径已更改（创建了副本），需要确保目标目录存在
+                    if resolved_path != dest_path:
+                        os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
+
+                    shutil.copy2(source_path, resolved_path)
+                    copied_files.append(resolved_path)
+                    source_paths.append(source_path)
+                    print(f"  复制成功: 文件已复制到 {resolved_path}")
+
+                except Exception as e:
+                    print(f"  复制操作发生异常: {e}")
+                    raise e
+
+        operation_success = True
+
+    except Exception as e:
+        error_message = str(e)
+        print(f"从CSV路径复制文件操作失败: {e}")
+        operation_success = False
+
+    finally:
+        # 无论操作是否成功，都保存操作历史记录
+        save_operation_history(
+            operation_type=operation_type,
+            source_paths=source_paths,
+            target_paths=copied_files,
+            backup_paths=backup_paths if cut_mode else None,
+            operation_id=operation_id,
+            success=operation_success,
+            error_message=error_message,
+        )
+
+    if operation_success:
+        print(f"\n{operation_type}操作完成")
+        if copied_files:
+            print(f"以下文件已{operation_type}:")
+            for file in copied_files:
+                print(f" - {file}")
+        else:
+            print("没有找到匹配的文件")
+    else:
+        print(f"\n{operation_type}操作失败")
+
+    return copied_files
 
 
 def export_structure_to_csv(target, log_csv):
@@ -960,181 +1186,6 @@ def cleanup_backup_files(keep_recent=False):
 
     except Exception as e:
         print(f"清理备份文件失败: {e}")
-
-
-def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
-    """从CSV路径复制文件到目标文件夹
-    Args:
-        csv_file: CSV文件路径，第一列为源文件路径，第二列为目标文件夹路径
-        cut_mode: 是否为剪切模式
-        conflict_mode: 冲突处理模式
-    """
-    copied_files = []
-    backup_paths = []
-    source_paths = []
-    temp_backup_dir = ".temp_backup"
-    operation_success = False
-    error_message = None
-
-    # 使用默认冲突处理模式
-    if conflict_mode is None:
-        conflict_mode = DEFAULT_CONFLICT_MODE
-
-    # 生成操作ID
-    operation_id = str(uuid.uuid4())
-    operation_type = "剪切" if cut_mode else "复制"
-
-    try:
-        # 验证CSV文件是否存在
-        if not os.path.exists(csv_file):
-            raise FileNotFoundError(f"CSV文件不存在: {csv_file}")
-
-        os.makedirs(temp_backup_dir, exist_ok=True)
-
-        # 读取CSV里的文件路径和目标文件夹路径
-        with open(csv_file, newline="", encoding="utf-8-sig") as f:
-            reader = csv.reader(f)
-            file_targets = []
-            for row_num, row in enumerate(reader, 1):
-                if not row:  # 跳过空行
-                    continue
-
-                if len(row) < 2:
-                    print(f"警告: 第 {row_num} 行数据不完整，需要至少两列数据")
-                    continue
-
-                source_path = row[0].strip()
-                target_folder = row[1].strip()
-                file_targets.append((source_path, target_folder))
-
-                print(
-                    f"正在处理: {source_path} -> {target_folder} ({operation_type}模式)"
-                )
-
-        # 处理文件复制
-        for source_path, target_folder in file_targets:
-            # 检查源文件是否存在
-            if not os.path.exists(source_path):
-                print(f"  警告: 源文件不存在: {source_path}")
-                continue
-
-            if not os.path.isfile(source_path):
-                print(f"  警告: 源路径不是文件: {source_path}")
-                continue
-
-            # 构建目标文件路径（保持原文件名）
-            file_name = os.path.basename(source_path)
-            dest_path = os.path.join(target_folder, file_name)
-
-            print(f"  源文件: {source_path}")
-            print(f"  目标文件: {dest_path}")
-
-            # 确保目标目录存在
-            os.makedirs(target_folder, exist_ok=True)
-
-            # 处理冲突
-            resolved_path = resolve_conflict(
-                source_path, dest_path, conflict_mode, is_folder=False
-            )
-            if resolved_path is None:
-                print(f"  跳过文件: {dest_path}")
-                continue
-
-            if cut_mode:
-                # 剪切模式：先备份再移动
-                temp_backup = os.path.join(
-                    temp_backup_dir,
-                    f"backup_{os.path.basename(source_path)}_{os.urandom(4).hex()}",
-                )
-                try:
-                    # 检查源文件是否存在
-                    if not os.path.exists(source_path):
-                        print(f"  警告: 源文件不存在: {source_path}")
-                        continue
-
-                    # 1. 备份到临时位置
-                    print(f"  正在创建备份: {source_path} -> {temp_backup}")
-                    shutil.copy2(source_path, temp_backup)
-                    print(f"  备份创建成功: {temp_backup}")
-                    backup_paths.append(temp_backup)
-                    source_paths.append(source_path)
-
-                    # 2. 移动文件
-                    print(f"  正在移动文件: {source_path} -> {resolved_path}")
-                    shutil.move(source_path, resolved_path)
-                    copied_files.append(resolved_path)
-
-                    # 验证移动是否成功
-                    if os.path.exists(resolved_path) and not os.path.exists(
-                        source_path
-                    ):
-                        print(f"  {operation_type}成功: 文件已移动到 {resolved_path}")
-                    else:
-                        print(f"  警告: {operation_type}操作可能未完全成功")
-                        print(f"  源文件存在: {os.path.exists(source_path)}")
-                        print(f"  目标文件存在: {os.path.exists(resolved_path)}")
-
-                except Exception as e:
-                    print(f"  {operation_type}操作发生异常: {e}")
-                    # 恢复备份
-                    if os.path.exists(temp_backup):
-                        try:
-                            shutil.move(temp_backup, source_path)
-                            print(f"  {operation_type}失败，已从备份恢复文件到原位置")
-                        except Exception as restore_error:
-                            print(f"  恢复备份失败: {restore_error}")
-                            print(f"  备份文件位置: {temp_backup}")
-                    else:
-                        print(f"  备份文件不存在，无法恢复: {temp_backup}")
-                    raise e
-
-            else:
-                # 复制模式
-                try:
-                    # 如果目标路径已更改（创建了副本），需要确保目标目录存在
-                    if resolved_path != dest_path:
-                        os.makedirs(os.path.dirname(resolved_path), exist_ok=True)
-
-                    shutil.copy2(source_path, resolved_path)
-                    copied_files.append(resolved_path)
-                    source_paths.append(source_path)
-                    print(f"  复制成功: 文件已复制到 {resolved_path}")
-
-                except Exception as e:
-                    print(f"  复制操作发生异常: {e}")
-                    raise e
-
-        operation_success = True
-
-    except Exception as e:
-        error_message = str(e)
-        print(f"从CSV路径复制文件操作失败: {e}")
-        operation_success = False
-
-    finally:
-        # 无论操作是否成功，都保存操作历史记录
-        save_operation_history(
-            operation_type=operation_type,
-            source_paths=source_paths,
-            target_paths=copied_files,
-            backup_paths=backup_paths if cut_mode else None,
-            operation_id=operation_id,
-            success=operation_success,
-            error_message=error_message,
-        )
-
-    if operation_success:
-        print(f"\n{operation_type}操作完成")
-        if copied_files:
-            print(f"以下文件已{operation_type}:")
-            for file in copied_files:
-                print(f" - {file}")
-        else:
-            print("没有找到匹配的文件")
-    else:
-        print(f"\n{operation_type}操作失败")
-
-    return copied_files
 
 
 def export_directory_to_csv(target_dir, output_csv, recursive=True):
