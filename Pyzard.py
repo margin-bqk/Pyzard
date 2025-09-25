@@ -1433,8 +1433,10 @@ if __name__ == "__main__":
                     print("\n=== 执行重命名文件功能 ===")
                     renamed = rename_files_in_place(source, csv_file, conflict_mode)
                     print(f"\n重命名完成，以下文件已重命名:")
-                    for old_name, new_name in renamed:
+                    for old_name, new_name, source_path, target_path in renamed:
                         print(f" - {old_name} -> {new_name}")
+                        print(f"   源: {source_path}")
+                        print(f"   目标: {target_path}")
 
                 elif choice == "5":
                     # 从CSV路径复制文件模式
