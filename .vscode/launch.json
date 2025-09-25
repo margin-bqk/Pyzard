@@ -2,10 +2,11 @@
     "version": "0.2.0",
     "configurations": [
         
+        
 
         {
             "name": "Pyzard 完整测试",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
             "args": ["--full"],
@@ -21,7 +22,7 @@
         },
         {
             "name": "Pyzard 快速测试",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
             "args": ["--quick"],
@@ -37,7 +38,7 @@
         },
         {
             "name": "Pyzard 编码测试",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
             "args": ["--encoding"],
@@ -53,7 +54,7 @@
         },
         {
             "name": "Pyzard 性能测试",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/test_pyzard_comprehensive.py",
             "args": ["--performance"],
@@ -69,7 +70,7 @@
         },
         {
             "name": "运行 Pyzard 主程序",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "program": "${workspaceFolder}/Pyzard.py",
             "console": "integratedTerminal",
