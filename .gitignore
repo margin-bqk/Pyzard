@@ -218,3 +218,4 @@ __marimo__/
 # Project Specific
 /test_*
 .operation_history.json
+.temp*/
