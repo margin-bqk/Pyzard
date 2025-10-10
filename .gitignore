@@ -218,7 +218,6 @@ __marimo__/
 # Project Specific
 /test_*
 .operation_history.json
-.temp*/
 
 # Pyzard测试相关文件
 .pyzard_test_*/
