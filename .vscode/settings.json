@@ -1,0 +1,54 @@
+{
+    // Python相关设置
+    "python.defaultInterpreterPath": "python",
+    "python.terminal.activateEnvironment": false,
+    "python.analysis.autoImportCompletions": true,
+    "python.analysis.typeCheckingMode": "basic",
+    
+    // 测试相关设置
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": false,
+    "python.testing.autoTestDiscoverOnSaveEnabled": false,
+    
+    // 文件排除设置
+    "files.exclude": {
+        "**/__pycache__": true,
+        "**/.pyzard_*": true,
+        "**/test_*.csv": true,
+        "**/test_report_*.html": true,
+        "**/.temp_backup": true,
+        "**/.pyzard_backup": true,
+        "**/.pyzard_history.json": true,
+        "**/*.pyc": true,
+        "**/*.pyo": true,
+        "**/*.pyd": true
+    },
+    
+    // 编辑器设置
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+        "source.organizeImports": "explicit"
+    },
+    
+    // 文件关联
+    "files.associations": {
+        "*.py": "python"
+    },
+    
+    // 终端设置
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}"
+    },
+    
+    // 调试设置
+    "debug.onTaskErrors": "showErrors",
+    "debug.internalConsoleOptions": "openOnSessionStart",
+    
+    // 工作区特定设置
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.python",
+        "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+        }
+    }
+}

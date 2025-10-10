@@ -1,0 +1,23 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+        "label": "Build with Git Info",
+        "type": "shell",
+        "command": "powershell",
+        "args": [
+            "-Command",
+            "$proj = Split-Path (git rev-parse --show-toplevel) -Leaf; ",
+            "$tag = git describe --tags --abbrev=0; ",
+            "$count = git rev-list --count HEAD; ",
+            "$commit = git rev-parse --short HEAD; ",
+            "pyinstaller --onefile --name \"$proj-$tag-$count-g$commit\" main.py"
+        ],
+        "group": {
+            "kind": "build",
+            "isDefault": true
+        },
+        "problemMatcher": []
+    }
+]
+}
