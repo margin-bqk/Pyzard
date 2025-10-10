@@ -218,6 +218,7 @@ __marimo__/
 # Project Specific
 /test_*
 .operation_history.json
+
 # Pyzard测试相关文件
 .pyzard_test_*/
 test_*.csv
@@ -245,4 +246,3 @@ desktop.ini
 # 日志文件
 *.log
 logs/
-.temp*/
