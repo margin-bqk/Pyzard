@@ -11,7 +11,7 @@
             "$tag = git describe --tags --abbrev=0; ",
             "$count = git rev-list --count HEAD; ",
             "$commit = git rev-parse --short HEAD; ",
-            "pyinstaller --onefile --name \"$proj-$tag-$count-g$commit\" main.py"
+            "pyinstaller --onefile --name \"$proj-$tag-$count-g$commit\" Pyzard.py"
         ],
         "group": {
             "kind": "build",
