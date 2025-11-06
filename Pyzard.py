@@ -945,6 +945,7 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
 
 
 def export_structure_to_csv(target, log_csv):
+    """导出目录结构到CSV（原始版本）"""
     with open(log_csv, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["Level", "Type", "Name", "FullPath"])
@@ -968,6 +969,117 @@ def export_structure_to_csv(target, log_csv):
                 indent_file = "    " * file_level
                 full_path = os.path.join(root, file)
                 writer.writerow([file_level, "File", f"{indent_file}{file}", full_path])
+
+
+def export_structure_to_csv_optimized(target, log_csv, show_progress=True):
+    """导出目录结构到CSV（优化版本）- 特别适合SMB共享文件夹
+    
+    Args:
+        target: 目标目录路径
+        log_csv: 输出CSV文件路径
+        show_progress: 是否显示进度信息
+    """
+    start_time = time.time()
+    all_rows = []
+    total_items = 0
+    processed_items = 0
+    
+    if show_progress:
+        print(f"开始扫描目录: {target}")
+        print("正在收集目录结构信息...")
+    
+    try:
+        # 第一阶段：收集所有数据到内存
+        for root, dirs, files in os.walk(target):
+            # 计算层级（相对target）
+            rel_path = os.path.relpath(root, target)
+            if rel_path == ".":
+                level = 0
+                folder_name = os.path.basename(target.rstrip("\\/"))
+            else:
+                level = rel_path.count(os.sep) + 1
+                folder_name = os.path.basename(root)
+
+            indent = "    " * level
+            
+            # 添加目录行
+            all_rows.append([level, "Folder", f"{indent}{folder_name}", root])
+            total_items += 1
+            
+            # 添加文件行
+            for file in files:
+                file_level = level + 1
+                indent_file = "    " * file_level
+                full_path = os.path.join(root, file)
+                all_rows.append([file_level, "File", f"{indent_file}{file}", full_path])
+                total_items += 1
+            
+            # 显示进度（每处理100个条目显示一次）
+            processed_items += 1 + len(files)
+            if show_progress and processed_items % 100 == 0:
+                print(f"已收集 {processed_items} 个条目...")
+        
+        if show_progress:
+            print(f"数据收集完成，共 {total_items} 个条目")
+            print("正在写入CSV文件...")
+        
+        # 第二阶段：批量写入CSV文件
+        with open(log_csv, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["Level", "Type", "Name", "FullPath"])
+            
+            # 批量写入所有数据
+            writer.writerows(all_rows)
+        
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
+        if show_progress:
+            print(f"导出完成！")
+            print(f"处理时间: {processing_time:.2f} 秒")
+            print(f"总条目数: {total_items}")
+            print(f"平均速度: {total_items/processing_time:.1f} 条目/秒")
+            print(f"输出文件: {log_csv}")
+        
+        return {
+            "success": True,
+            "total_items": total_items,
+            "processing_time": processing_time,
+            "output_file": log_csv
+        }
+        
+    except PermissionError as e:
+        error_msg = f"权限错误: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "PermissionError"
+        }
+    except FileNotFoundError as e:
+        error_msg = f"文件或目录不存在: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "FileNotFoundError"
+        }
+    except OSError as e:
+        error_msg = f"系统错误（可能是网络连接问题）: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "OSError"
+        }
+    except Exception as e:
+        error_msg = f"未知错误: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "Exception"
+        }
 
 
 def save_operation_history(
@@ -1620,9 +1732,24 @@ if __name__ == "__main__":
                 # 对于选项5和6，不进行结构导出
                 if choice not in ["5", "6"]:
                     print("\n正在导出最终结构到:", log_csv)
-                    export_structure_to_csv(
-                        target if choice != "4" else source, log_csv
-                    )
+                    
+                    # 让用户选择使用优化版本还是原始版本
+                    use_optimized = input("是否使用优化版本（推荐用于SMB共享文件夹）？(y/n, 默认y): ").strip().lower()
+                    if use_optimized == "n" or use_optimized == "no":
+                        print("使用原始版本导出...")
+                        export_structure_to_csv(
+                            target if choice != "4" else source, log_csv
+                        )
+                    else:
+                        print("使用优化版本导出...")
+                        result = export_structure_to_csv_optimized(
+                            target if choice != "4" else source, log_csv, show_progress=True
+                        )
+                        if result["success"]:
+                            print("导出完成！")
+                        else:
+                            print(f"导出失败: {result['error']}")
+                    
                     print("导出完成！")
 
         except Exception as e:
