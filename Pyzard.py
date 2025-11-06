@@ -944,40 +944,18 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
     return copied_items
 
 
-def export_structure_to_csv(target, log_csv):
-    """导出目录结构到CSV（原始版本）"""
-    with open(log_csv, "w", newline="", encoding="utf-8-sig") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Level", "Type", "Name", "FullPath"])
-
-        for root, dirs, files in os.walk(target):
-            # 计算层级（相对target）
-            rel_path = os.path.relpath(root, target)
-            if rel_path == ".":
-                level = 0
-                folder_name = os.path.basename(target.rstrip("\\/"))
-            else:
-                level = rel_path.count(os.sep) + 1
-                folder_name = os.path.basename(root)
-
-            indent = "    " * level
-            writer.writerow([level, "Folder", f"{indent}{folder_name}", root])
-
-            # 列出文件
-            for file in files:
-                file_level = level + 1
-                indent_file = "    " * file_level
-                full_path = os.path.join(root, file)
-                writer.writerow([file_level, "File", f"{indent_file}{file}", full_path])
-
-
-def export_structure_to_csv_optimized(target, log_csv, show_progress=True):
-    """导出目录结构到CSV（优化版本）- 特别适合SMB共享文件夹
+def export_directory_structure(target_dir, output_csv, format_type="simple", recursive=True, show_progress=True):
+    """统一的目录结构导出函数
     
     Args:
-        target: 目标目录路径
-        log_csv: 输出CSV文件路径
+        target_dir: 目标目录路径
+        output_csv: 输出CSV文件路径
+        format_type: 输出格式类型 ("simple" - 简单格式, "detailed" - 详细格式)
+        recursive: 是否递归遍历子目录
         show_progress: 是否显示进度信息
+    
+    Returns:
+        dict: 包含操作结果的字典
     """
     start_time = time.time()
     all_rows = []
@@ -985,48 +963,181 @@ def export_structure_to_csv_optimized(target, log_csv, show_progress=True):
     processed_items = 0
     
     if show_progress:
-        print(f"开始扫描目录: {target}")
+        print(f"开始扫描目录: {target_dir}")
         print("正在收集目录结构信息...")
     
     try:
+        # 定义表头
+        if format_type == "simple":
+            headers = ["Level", "Type", "Name", "FullPath"]
+        else:  # detailed format
+            headers = ["名称", "类型", "完整路径", "大小(字节)", "修改时间", "层级"]
+        
         # 第一阶段：收集所有数据到内存
-        for root, dirs, files in os.walk(target):
-            # 计算层级（相对target）
-            rel_path = os.path.relpath(root, target)
-            if rel_path == ".":
-                level = 0
-                folder_name = os.path.basename(target.rstrip("\\/"))
-            else:
-                level = rel_path.count(os.sep) + 1
-                folder_name = os.path.basename(root)
-
-            indent = "    " * level
+        if recursive:
+            # 递归遍历模式
+            for root, dirs, files in os.walk(target_dir):
+                # 计算层级（相对target_dir）
+                rel_path = os.path.relpath(root, target_dir)
+                if rel_path == ".":
+                    level = 0
+                    folder_name = os.path.basename(target_dir.rstrip("\\/"))
+                else:
+                    level = rel_path.count(os.sep) + 1
+                    folder_name = os.path.basename(root)
+                
+                if format_type == "simple":
+                    # 简单格式：使用缩进
+                    indent = "    " * level
+                    all_rows.append([level, "Folder", f"{indent}{folder_name}", root])
+                    total_items += 1
+                    
+                    # 处理文件
+                    for file in files:
+                        file_level = level + 1
+                        indent_file = "    " * file_level
+                        full_path = os.path.join(root, file)
+                        all_rows.append([file_level, "File", f"{indent_file}{file}", full_path])
+                        total_items += 1
+                else:
+                    # 详细格式：包含大小和时间信息
+                    try:
+                        dir_stat = os.stat(root)
+                        all_rows.append([
+                            folder_name,
+                            "文件夹",
+                            root,
+                            "",
+                            datetime.fromtimestamp(dir_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                            level
+                        ])
+                        total_items += 1
+                    except Exception as e:
+                        print(f"  警告: 无法获取目录信息 {root}: {e}")
+                        all_rows.append([folder_name, "文件夹", root, "无法访问", "", level])
+                        total_items += 1
+                    
+                    # 处理文件
+                    for file in files:
+                        file_path = os.path.join(root, file)
+                        try:
+                            file_stat = os.stat(file_path)
+                            all_rows.append([
+                                file,
+                                "文件",
+                                file_path,
+                                file_stat.st_size,
+                                datetime.fromtimestamp(file_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                level + 1
+                            ])
+                            total_items += 1
+                        except Exception as e:
+                            print(f"  警告: 无法获取文件信息 {file_path}: {e}")
+                            all_rows.append([file, "文件", file_path, "无法访问", "", level + 1])
+                            total_items += 1
+                
+                # 显示进度（每处理100个条目显示一次）
+                processed_items += 1 + len(files)
+                if show_progress and processed_items % 100 == 0:
+                    print(f"已收集 {processed_items} 个条目...")
+        else:
+            # 仅根目录模式
+            level = 0
             
-            # 添加目录行
-            all_rows.append([level, "Folder", f"{indent}{folder_name}", root])
-            total_items += 1
-            
-            # 添加文件行
-            for file in files:
-                file_level = level + 1
-                indent_file = "    " * file_level
-                full_path = os.path.join(root, file)
-                all_rows.append([file_level, "File", f"{indent_file}{file}", full_path])
+            if format_type == "simple":
+                # 简单格式
+                folder_name = os.path.basename(target_dir.rstrip("\\/"))
+                indent = "    " * level
+                all_rows.append([level, "Folder", f"{indent}{folder_name}", target_dir])
                 total_items += 1
+            else:
+                # 详细格式
+                try:
+                    root_stat = os.stat(target_dir)
+                    all_rows.append([
+                        os.path.basename(target_dir.rstrip("\\/")),
+                        "文件夹",
+                        target_dir,
+                        "",
+                        datetime.fromtimestamp(root_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                        level
+                    ])
+                    total_items += 1
+                except Exception as e:
+                    print(f"  警告: 无法获取根目录信息 {target_dir}: {e}")
+                    all_rows.append([
+                        os.path.basename(target_dir.rstrip("\\/")),
+                        "文件夹",
+                        target_dir,
+                        "无法访问",
+                        "",
+                        level
+                    ])
+                    total_items += 1
             
-            # 显示进度（每处理100个条目显示一次）
-            processed_items += 1 + len(files)
-            if show_progress and processed_items % 100 == 0:
-                print(f"已收集 {processed_items} 个条目...")
+            # 处理根目录下的文件和文件夹
+            try:
+                items = os.listdir(target_dir)
+                for item in items:
+                    item_path = os.path.join(target_dir, item)
+                    try:
+                        item_stat = os.stat(item_path)
+                        if os.path.isdir(item_path):
+                            if format_type == "simple":
+                                all_rows.append([level + 1, "Folder", f"    {item}", item_path])
+                            else:
+                                all_rows.append([
+                                    item,
+                                    "文件夹",
+                                    item_path,
+                                    "",
+                                    datetime.fromtimestamp(item_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                    level + 1
+                                ])
+                        else:
+                            if format_type == "simple":
+                                all_rows.append([level + 1, "File", f"    {item}", item_path])
+                            else:
+                                all_rows.append([
+                                    item,
+                                    "文件",
+                                    item_path,
+                                    item_stat.st_size,
+                                    datetime.fromtimestamp(item_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                    level + 1
+                                ])
+                        total_items += 1
+                    except Exception as e:
+                        print(f"  警告: 无法获取项目信息 {item_path}: {e}")
+                        item_type = "Folder" if os.path.isdir(item_path) else "File"
+                        if format_type == "simple":
+                            all_rows.append([level + 1, item_type, f"    {item}", item_path])
+                        else:
+                            item_type_cn = "文件夹" if os.path.isdir(item_path) else "文件"
+                            all_rows.append([item, item_type_cn, item_path, "无法访问", "", level + 1])
+                        total_items += 1
+                
+                # 显示进度
+                processed_items += len(items) + 1
+                if show_progress and processed_items % 100 == 0:
+                    print(f"已收集 {processed_items} 个条目...")
+                    
+            except Exception as e:
+                print(f"无法列出目录内容 {target_dir}: {e}")
+                return {
+                    "success": False,
+                    "error": f"无法列出目录内容: {e}",
+                    "error_type": "ListDirectoryError"
+                }
         
         if show_progress:
             print(f"数据收集完成，共 {total_items} 个条目")
             print("正在写入CSV文件...")
         
         # 第二阶段：批量写入CSV文件
-        with open(log_csv, "w", newline="", encoding="utf-8-sig") as f:
+        with open(output_csv, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
-            writer.writerow(["Level", "Type", "Name", "FullPath"])
+            writer.writerow(headers)
             
             # 批量写入所有数据
             writer.writerows(all_rows)
@@ -1039,13 +1150,14 @@ def export_structure_to_csv_optimized(target, log_csv, show_progress=True):
             print(f"处理时间: {processing_time:.2f} 秒")
             print(f"总条目数: {total_items}")
             print(f"平均速度: {total_items/processing_time:.1f} 条目/秒")
-            print(f"输出文件: {log_csv}")
+            print(f"输出文件: {output_csv}")
         
         return {
             "success": True,
             "total_items": total_items,
             "processing_time": processing_time,
-            "output_file": log_csv
+            "output_file": output_csv,
+            "format_type": format_type
         }
         
     except PermissionError as e:
@@ -1080,6 +1192,21 @@ def export_structure_to_csv_optimized(target, log_csv, show_progress=True):
             "error": error_msg,
             "error_type": "Exception"
         }
+
+
+def export_structure_to_csv(target, log_csv):
+    """导出目录结构到CSV（简单格式）- 向后兼容"""
+    return export_directory_structure(target, log_csv, format_type="simple", recursive=True, show_progress=False)
+
+
+def export_structure_to_csv_optimized(target, log_csv, show_progress=True):
+    """导出目录结构到CSV（优化版本）- 向后兼容"""
+    return export_directory_structure(target, log_csv, format_type="simple", recursive=True, show_progress=show_progress)
+
+
+def export_directory_to_csv(target_dir, output_csv, recursive=True):
+    """导出目录结构到CSV文件（详细格式）- 向后兼容"""
+    return export_directory_structure(target_dir, output_csv, format_type="detailed", recursive=recursive, show_progress=False)
 
 
 def save_operation_history(
@@ -1328,140 +1455,6 @@ def cleanup_backup_files(keep_recent=False):
         print(f"清理备份文件失败: {e}")
 
 
-def export_directory_to_csv(target_dir, output_csv, recursive=True):
-    """导出目录结构到CSV文件
-    Args:
-        target_dir: 目标目录路径
-        output_csv: 输出CSV文件路径
-        recursive: 是否递归遍历子目录
-    """
-    try:
-        with open(output_csv, "w", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            # 写入表头
-            writer.writerow(
-                ["名称", "类型", "完整路径", "大小(字节)", "修改时间", "层级"]
-            )
-
-            if recursive:
-                # 递归遍历模式
-                for root, dirs, files in os.walk(target_dir):
-                    # 计算层级（相对target_dir）
-                    rel_path = os.path.relpath(root, target_dir)
-                    if rel_path == ".":
-                        level = 0
-                    else:
-                        level = rel_path.count(os.sep) + 1
-
-                    # 处理当前目录
-                    if root != target_dir or level == 0:
-                        dir_name = os.path.basename(root)
-                        dir_stat = os.stat(root)
-                        writer.writerow(
-                            [
-                                dir_name,
-                                "文件夹",
-                                root,
-                                "",
-                                datetime.fromtimestamp(dir_stat.st_mtime).strftime(
-                                    "%Y-%m-%d %H:%M:%S"
-                                ),
-                                level,
-                            ]
-                        )
-
-                    # 处理文件
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        try:
-                            file_stat = os.stat(file_path)
-                            writer.writerow(
-                                [
-                                    file,
-                                    "文件",
-                                    file_path,
-                                    file_stat.st_size,
-                                    datetime.fromtimestamp(file_stat.st_mtime).strftime(
-                                        "%Y-%m-%d %H:%M:%S"
-                                    ),
-                                    level + 1,
-                                ]
-                            )
-                        except Exception as e:
-                            print(f"  警告: 无法获取文件信息 {file_path}: {e}")
-                            writer.writerow(
-                                [file, "文件", file_path, "无法访问", "", level + 1]
-                            )
-
-            else:
-                # 仅根目录模式
-                level = 0
-
-                # 处理根目录本身
-                root_stat = os.stat(target_dir)
-                writer.writerow(
-                    [
-                        os.path.basename(target_dir.rstrip("\\/")),
-                        "文件夹",
-                        target_dir,
-                        "",
-                        datetime.fromtimestamp(root_stat.st_mtime).strftime(
-                            "%Y-%m-%d %H:%M:%S"
-                        ),
-                        level,
-                    ]
-                )
-
-                # 处理根目录下的文件和文件夹
-                try:
-                    items = os.listdir(target_dir)
-                    for item in items:
-                        item_path = os.path.join(target_dir, item)
-                        try:
-                            item_stat = os.stat(item_path)
-                            if os.path.isdir(item_path):
-                                writer.writerow(
-                                    [
-                                        item,
-                                        "文件夹",
-                                        item_path,
-                                        "",
-                                        datetime.fromtimestamp(
-                                            item_stat.st_mtime
-                                        ).strftime("%Y-%m-%d %H:%M:%S"),
-                                        level + 1,
-                                    ]
-                                )
-                            else:
-                                writer.writerow(
-                                    [
-                                        item,
-                                        "文件",
-                                        item_path,
-                                        item_stat.st_size,
-                                        datetime.fromtimestamp(
-                                            item_stat.st_mtime
-                                        ).strftime("%Y-%m-%d %H:%M:%S"),
-                                        level + 1,
-                                    ]
-                                )
-                        except Exception as e:
-                            print(f"  警告: 无法获取项目信息 {item_path}: {e}")
-                            item_type = "文件夹" if os.path.isdir(item_path) else "文件"
-                            writer.writerow(
-                                [item, item_type, item_path, "无法访问", "", level + 1]
-                            )
-
-                except Exception as e:
-                    print(f"无法列出目录内容 {target_dir}: {e}")
-                    return False
-
-        print(f"目录结构已成功导出到: {output_csv}")
-        return True
-
-    except Exception as e:
-        print(f"导出目录结构失败: {e}")
-        return False
 
 
 def cleanup_old_history(max_entries=5000):
@@ -1678,12 +1671,23 @@ if __name__ == "__main__":
                     else:
                         print("仅导出根目录内容")
 
-                    print(f"\n=== 执行导出目录结构功能 ===")
-                    success = export_directory_to_csv(target_dir, output_csv, recursive)
-                    if success:
-                        print(f"目录结构已成功导出到: {output_csv}")
+                    # ===== 优化版本选择 =====
+                    use_optimized = input("是否使用优化版本（推荐用于SMB共享文件夹）？(y/n, 默认y): ").strip().lower()
+                    if use_optimized == "n" or use_optimized == "no":
+                        print("使用原始版本导出...")
+                        result = export_directory_structure(target_dir, output_csv, format_type="detailed", recursive=recursive, show_progress=False)
                     else:
-                        print("导出目录结构失败")
+                        print("使用优化版本导出...")
+                        result = export_directory_structure(target_dir, output_csv, format_type="detailed", recursive=recursive, show_progress=True)
+
+                    print(f"\n=== 执行导出目录结构功能 ===")
+                    if result["success"]:
+                        print(f"目录结构已成功导出到: {output_csv}")
+                        if result.get("total_items"):
+                            print(f"处理时间: {result['processing_time']:.2f} 秒")
+                            print(f"总条目数: {result['total_items']}")
+                    else:
+                        print(f"导出目录结构失败: {result['error']}")
 
                 else:
                     # ===== 通用输入 =====
