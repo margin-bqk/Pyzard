@@ -5,6 +5,7 @@ import json
 import uuid
 import time
 from datetime import datetime
+import concurrent.futures
 
 
 # 冲突处理模式定义
@@ -944,6 +945,361 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
     return copied_items
 
 
+def get_file_info_async(file_path, collect_details=True):
+    """异步获取文件信息
+    Args:
+        file_path: 文件路径
+        collect_details: 是否收集详细信息（大小、修改时间）
+    Returns:
+        dict: 文件信息
+    """
+    try:
+        if collect_details:
+            stat_info = os.stat(file_path)
+            return {
+                "name": os.path.basename(file_path),
+                "path": file_path,
+                "type": "file",
+                "size": stat_info.st_size,
+                "mtime": datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                "success": True
+            }
+        else:
+            return {
+                "name": os.path.basename(file_path),
+                "path": file_path,
+                "type": "file",
+                "size": "",
+                "mtime": "",
+                "success": True
+            }
+    except Exception as e:
+        return {
+            "name": os.path.basename(file_path),
+            "path": file_path,
+            "type": "file",
+            "size": "无法访问",
+            "mtime": "",
+            "success": False,
+            "error": str(e)
+        }
+
+def export_directory_structure_optimized(target_dir, output_csv, format_type="simple", recursive=True, 
+                                        show_progress=True, max_workers=10, collect_details=True):
+    """优化的目录结构导出函数（异步处理+选择性收集）
+    
+    Args:
+        target_dir: 目标目录路径
+        output_csv: 输出CSV文件路径
+        format_type: 输出格式类型 ("simple" - 简单格式, "detailed" - 详细格式)
+        recursive: 是否递归遍历子目录
+        show_progress: 是否显示进度信息
+        max_workers: 最大并发线程数
+        collect_details: 是否收集详细信息（文件大小、修改时间）
+    
+    Returns:
+        dict: 包含操作结果的字典
+    """
+    start_time = time.time()
+    all_rows = []
+    total_items = 0
+    processed_items = 0
+    
+    if show_progress:
+        print(f"开始扫描目录: {target_dir}")
+        print(f"使用异步处理 (线程数: {max_workers})")
+        print(f"详细信息收集: {'启用' if collect_details else '禁用'}")
+        print("正在收集目录结构信息...")
+    
+    try:
+        # 定义表头
+        if format_type == "simple":
+            headers = ["Level", "Type", "Name", "FullPath"]
+        else:  # detailed format
+            headers = ["名称", "类型", "完整路径", "大小(字节)", "修改时间", "层级"]
+        
+        # 第一阶段：收集所有数据到内存
+        if recursive:
+            # 递归遍历模式
+            for root, dirs, files in os.walk(target_dir):
+                # 计算层级（相对target_dir）
+                rel_path = os.path.relpath(root, target_dir)
+                if rel_path == ".":
+                    level = 0
+                    folder_name = os.path.basename(target_dir.rstrip("\\/"))
+                else:
+                    level = rel_path.count(os.sep) + 1
+                    folder_name = os.path.basename(root)
+                
+                if format_type == "simple":
+                    # 简单格式：使用缩进
+                    indent = "    " * level
+                    all_rows.append([level, "Folder", f"{indent}{folder_name}", root])
+                    total_items += 1
+                    
+                    # 异步处理文件信息
+                    if files:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            # 提交所有文件处理任务
+                            future_to_file = {
+                                executor.submit(get_file_info_async, os.path.join(root, file), collect_details): file 
+                                for file in files
+                            }
+                            
+                            # 收集结果
+                            for future in concurrent.futures.as_completed(future_to_file):
+                                file_info = future.result()
+                                file_level = level + 1
+                                indent_file = "    " * file_level
+                                
+                                if format_type == "simple":
+                                    all_rows.append([file_level, "File", f"{indent_file}{file_info['name']}", file_info['path']])
+                                else:
+                                    all_rows.append([
+                                        file_info['name'],
+                                        "文件",
+                                        file_info['path'],
+                                        file_info['size'],
+                                        file_info['mtime'],
+                                        file_level
+                                    ])
+                                total_items += 1
+                                processed_items += 1
+                                
+                                # 显示进度（每处理100个条目显示一次）
+                                if show_progress and processed_items % 100 == 0:
+                                    print(f"已收集 {processed_items} 个条目...")
+                else:
+                    # 详细格式：包含大小和时间信息
+                    try:
+                        dir_stat = os.stat(root)
+                        all_rows.append([
+                            folder_name,
+                            "文件夹",
+                            root,
+                            "",
+                            datetime.fromtimestamp(dir_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                            level
+                        ])
+                        total_items += 1
+                    except Exception as e:
+                        print(f"  警告: 无法获取目录信息 {root}: {e}")
+                        all_rows.append([folder_name, "文件夹", root, "无法访问", "", level])
+                        total_items += 1
+                    
+                    # 异步处理文件信息
+                    if files:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            # 提交所有文件处理任务
+                            future_to_file = {
+                                executor.submit(get_file_info_async, os.path.join(root, file), collect_details): file 
+                                for file in files
+                            }
+                            
+                            # 收集结果
+                            for future in concurrent.futures.as_completed(future_to_file):
+                                file_info = future.result()
+                                file_level = level + 1
+                                
+                                all_rows.append([
+                                    file_info['name'],
+                                    "文件",
+                                    file_info['path'],
+                                    file_info['size'],
+                                    file_info['mtime'],
+                                    file_level
+                                ])
+                                total_items += 1
+                                processed_items += 1
+                                
+                                # 显示进度（每处理100个条目显示一次）
+                                if show_progress and processed_items % 100 == 0:
+                                    print(f"已收集 {processed_items} 个条目...")
+                
+                # 处理目录（非异步，因为目录数量通常较少）
+                processed_items += 1
+                if show_progress and processed_items % 100 == 0:
+                    print(f"已收集 {processed_items} 个条目...")
+        else:
+            # 仅根目录模式
+            level = 0
+            
+            if format_type == "simple":
+                # 简单格式
+                folder_name = os.path.basename(target_dir.rstrip("\\/"))
+                indent = "    " * level
+                all_rows.append([level, "Folder", f"{indent}{folder_name}", target_dir])
+                total_items += 1
+            else:
+                # 详细格式
+                try:
+                    root_stat = os.stat(target_dir)
+                    all_rows.append([
+                        os.path.basename(target_dir.rstrip("\\/")),
+                        "文件夹",
+                        target_dir,
+                        "",
+                        datetime.fromtimestamp(root_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                        level
+                    ])
+                    total_items += 1
+                except Exception as e:
+                    print(f"  警告: 无法获取根目录信息 {target_dir}: {e}")
+                    all_rows.append([
+                        os.path.basename(target_dir.rstrip("\\/")),
+                        "文件夹",
+                        target_dir,
+                        "无法访问",
+                        "",
+                        level
+                    ])
+                    total_items += 1
+            
+            # 处理根目录下的文件和文件夹
+            try:
+                items = os.listdir(target_dir)
+                files_to_process = []
+                dirs_to_process = []
+                
+                # 分离文件和文件夹
+                for item in items:
+                    item_path = os.path.join(target_dir, item)
+                    if os.path.isdir(item_path):
+                        dirs_to_process.append((item, item_path))
+                    else:
+                        files_to_process.append((item, item_path))
+                
+                # 处理文件夹（非异步）
+                for item, item_path in dirs_to_process:
+                    try:
+                        item_stat = os.stat(item_path)
+                        if format_type == "simple":
+                            all_rows.append([level + 1, "Folder", f"    {item}", item_path])
+                        else:
+                            all_rows.append([
+                                item,
+                                "文件夹",
+                                item_path,
+                                "",
+                                datetime.fromtimestamp(item_stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                                level + 1
+                            ])
+                        total_items += 1
+                    except Exception as e:
+                        print(f"  警告: 无法获取文件夹信息 {item_path}: {e}")
+                        if format_type == "simple":
+                            all_rows.append([level + 1, "Folder", f"    {item}", item_path])
+                        else:
+                            all_rows.append([item, "文件夹", item_path, "无法访问", "", level + 1])
+                        total_items += 1
+                
+                # 异步处理文件
+                if files_to_process:
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                        # 提交所有文件处理任务
+                        future_to_file = {
+                            executor.submit(get_file_info_async, item_path, collect_details): item 
+                            for item, item_path in files_to_process
+                        }
+                        
+                        # 收集结果
+                        for future in concurrent.futures.as_completed(future_to_file):
+                            file_info = future.result()
+                            file_level = level + 1
+                            
+                            if format_type == "simple":
+                                all_rows.append([file_level, "File", f"    {file_info['name']}", file_info['path']])
+                            else:
+                                all_rows.append([
+                                    file_info['name'],
+                                    "文件",
+                                    file_info['path'],
+                                    file_info['size'],
+                                    file_info['mtime'],
+                                    file_level
+                                ])
+                            total_items += 1
+                            processed_items += 1
+                
+                # 显示进度
+                processed_items += len(items) + 1
+                if show_progress and processed_items % 100 == 0:
+                    print(f"已收集 {processed_items} 个条目...")
+                    
+            except Exception as e:
+                print(f"无法列出目录内容 {target_dir}: {e}")
+                return {
+                    "success": False,
+                    "error": f"无法列出目录内容: {e}",
+                    "error_type": "ListDirectoryError"
+                }
+        
+        if show_progress:
+            print(f"数据收集完成，共 {total_items} 个条目")
+            print("正在写入CSV文件...")
+        
+        # 第二阶段：批量写入CSV文件
+        with open(output_csv, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(headers)
+            
+            # 批量写入所有数据
+            writer.writerows(all_rows)
+        
+        end_time = time.time()
+        processing_time = end_time - start_time
+        
+        if show_progress:
+            print(f"导出完成！")
+            print(f"处理时间: {processing_time:.2f} 秒")
+            print(f"总条目数: {total_items}")
+            print(f"平均速度: {total_items/processing_time:.1f} 条目/秒")
+            print(f"输出文件: {output_csv}")
+        
+        return {
+            "success": True,
+            "total_items": total_items,
+            "processing_time": processing_time,
+            "output_file": output_csv,
+            "format_type": format_type,
+            "optimized": True,
+            "max_workers": max_workers,
+            "collect_details": collect_details
+        }
+        
+    except PermissionError as e:
+        error_msg = f"权限错误: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "PermissionError"
+        }
+    except FileNotFoundError as e:
+        error_msg = f"文件或目录不存在: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "FileNotFoundError"
+        }
+    except OSError as e:
+        error_msg = f"系统错误（可能是网络连接问题）: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "OSError"
+        }
+    except Exception as e:
+        error_msg = f"未知错误: {e}"
+        print(f"错误: {error_msg}")
+        return {
+            "success": False,
+            "error": error_msg,
+            "error_type": "Exception"
+        }
+
 def export_directory_structure(target_dir, output_csv, format_type="simple", recursive=True, show_progress=True):
     """统一的目录结构导出函数
     
@@ -1672,13 +2028,51 @@ if __name__ == "__main__":
                         print("仅导出根目录内容")
 
                     # ===== 优化版本选择 =====
-                    use_optimized = input("是否使用优化版本（推荐用于SMB共享文件夹）？(y/n, 默认y): ").strip().lower()
-                    if use_optimized == "n" or use_optimized == "no":
+                    print("\n请选择导出模式:")
+                    print("1. 原始版本 (兼容性最好)")
+                    print("2. 优化版本 (推荐用于SMB共享文件夹)")
+                    print("3. 异步优化版本 (最快，推荐用于超大目录)")
+                    
+                    mode_choice = input("请输入选项 (1, 2 或 3, 默认3): ").strip()
+                    
+                    if mode_choice == "1":
                         print("使用原始版本导出...")
                         result = export_directory_structure(target_dir, output_csv, format_type="detailed", recursive=recursive, show_progress=False)
-                    else:
+                    elif mode_choice == "2":
                         print("使用优化版本导出...")
                         result = export_directory_structure(target_dir, output_csv, format_type="detailed", recursive=recursive, show_progress=True)
+                    else:
+                        # 异步优化版本
+                        print("使用异步优化版本导出...")
+                        
+                        # 线程数选择
+                        max_workers = input("请输入并发线程数 (默认10): ").strip()
+                        if not max_workers:
+                            max_workers = 10
+                        else:
+                            try:
+                                max_workers = int(max_workers)
+                                if max_workers < 1:
+                                    max_workers = 1
+                                elif max_workers > 50:
+                                    max_workers = 50
+                            except:
+                                max_workers = 10
+                        
+                        # 详细信息收集选择
+                        collect_details = input("是否收集文件大小和修改时间？(y/n, 默认y): ").strip().lower()
+                        if collect_details == "n" or collect_details == "no":
+                            collect_details = False
+                            print("禁用详细信息收集 (速度最快)")
+                        else:
+                            collect_details = True
+                            print("启用详细信息收集")
+                        
+                        result = export_directory_structure_optimized(
+                            target_dir, output_csv, format_type="detailed", 
+                            recursive=recursive, show_progress=True,
+                            max_workers=max_workers, collect_details=collect_details
+                        )
 
                     print(f"\n=== 执行导出目录结构功能 ===")
                     if result["success"]:
@@ -1686,6 +2080,9 @@ if __name__ == "__main__":
                         if result.get("total_items"):
                             print(f"处理时间: {result['processing_time']:.2f} 秒")
                             print(f"总条目数: {result['total_items']}")
+                            if result.get("optimized"):
+                                print(f"并发线程数: {result.get('max_workers', 'N/A')}")
+                                print(f"详细信息收集: {'启用' if result.get('collect_details', True) else '禁用'}")
                     else:
                         print(f"导出目录结构失败: {result['error']}")
 
