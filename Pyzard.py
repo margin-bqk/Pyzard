@@ -945,34 +945,84 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
     return copied_items
 
 
-def get_file_info_async(file_path, collect_details=True):
-    """异步获取文件信息
+def is_image_file(file_path):
+    """判断是否为图片文件
+    Args:
+        file_path: 文件路径
+    Returns:
+        bool: 是否为图片文件
+    """
+    image_extensions = {
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', 
+        '.tiff', '.tif', '.webp', '.ico', '.svg',
+        '.raw', '.cr2', '.nef', '.arw'  # 支持RAW格式
+    }
+    return os.path.splitext(file_path)[1].lower() in image_extensions
+
+
+def get_image_resolution(file_path):
+    """获取图片分辨率
+    Args:
+        file_path: 图片文件路径
+    Returns:
+        str: 分辨率字符串 (如 "1920x1080") 或错误信息
+    """
+    try:
+        from PIL import Image
+        with Image.open(file_path) as img:
+            width, height = img.size
+            return f"{width}x{height}"
+    except ImportError:
+        return "需要Pillow库"
+    except Exception as e:
+        # 详细的错误处理
+        if "identified" in str(e).lower():
+            return "非图片文件"
+        elif "permission" in str(e).lower():
+            return "权限不足"
+        else:
+            return f"解析失败: {str(e)[:50]}"
+
+
+def get_file_info_async(file_path, collect_details=True, collect_resolution=False):
+    """异步获取文件信息（扩展版）
+    
     Args:
         file_path: 文件路径
         collect_details: 是否收集详细信息（大小、修改时间）
+        collect_resolution: 是否收集图片分辨率
+        
     Returns:
-        dict: 文件信息
+        dict: 包含分辨率信息的文件信息字典
     """
     try:
+        # 基础信息
+        info = {
+            "name": os.path.basename(file_path),
+            "path": file_path,
+            "type": "file",
+            "success": True
+        }
+
         if collect_details:
             stat_info = os.stat(file_path)
-            return {
-                "name": os.path.basename(file_path),
-                "path": file_path,
-                "type": "file",
-                "size": stat_info.st_size,
-                "mtime": datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                "success": True
-            }
+            info["size"] = stat_info.st_size
+            info["mtime"] = datetime.fromtimestamp(stat_info.st_mtime).strftime("%Y-%m-%d %H:%M:%S")
         else:
-            return {
-                "name": os.path.basename(file_path),
-                "path": file_path,
-                "type": "file",
-                "size": "",
-                "mtime": "",
-                "success": True
-            }
+            info["size"] = ""
+            info["mtime"] = ""
+
+        # 图片分辨率收集
+        if collect_resolution:
+            if is_image_file(file_path):
+                info["resolution"] = get_image_resolution(file_path)
+            else:
+                info["resolution"] = "N/A"  # 非图片文件
+        else:
+            info["resolution"] = ""
+
+        return info
+
     except Exception as e:
         return {
             "name": os.path.basename(file_path),
@@ -980,12 +1030,13 @@ def get_file_info_async(file_path, collect_details=True):
             "type": "file",
             "size": "无法访问",
             "mtime": "",
+            "resolution": "",
             "success": False,
             "error": str(e)
         }
 
 def export_directory_structure_optimized(target_dir, output_csv, format_type="simple", recursive=True, 
-                                        show_progress=True, max_workers=10, collect_details=True):
+                                        show_progress=True, max_workers=10, collect_details=True, collect_resolution=False):
     """优化的目录结构导出函数（异步处理+选择性收集）
     
     Args:
@@ -996,6 +1047,7 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
         show_progress: 是否显示进度信息
         max_workers: 最大并发线程数
         collect_details: 是否收集详细信息（文件大小、修改时间）
+        collect_resolution: 是否收集图片分辨率
     
     Returns:
         dict: 包含操作结果的字典
@@ -1016,7 +1068,10 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
         if format_type == "simple":
             headers = ["Level", "Type", "Name", "FullPath"]
         else:  # detailed format
-            headers = ["名称", "类型", "完整路径", "大小(字节)", "修改时间", "层级"]
+            if collect_resolution:
+                headers = ["名称", "类型", "完整路径", "大小(字节)", "修改时间", "分辨率", "层级"]
+            else:
+                headers = ["名称", "类型", "完整路径", "大小(字节)", "修改时间", "层级"]
         
         # 第一阶段：收集所有数据到内存
         if recursive:
@@ -1042,7 +1097,7 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
                         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                             # 提交所有文件处理任务
                             future_to_file = {
-                                executor.submit(get_file_info_async, os.path.join(root, file), collect_details): file 
+                                executor.submit(get_file_info_async, os.path.join(root, file), collect_details, collect_resolution): file 
                                 for file in files
                             }
                             
@@ -1055,14 +1110,25 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
                                 if format_type == "simple":
                                     all_rows.append([file_level, "File", f"{indent_file}{file_info['name']}", file_info['path']])
                                 else:
-                                    all_rows.append([
-                                        file_info['name'],
-                                        "文件",
-                                        file_info['path'],
-                                        file_info['size'],
-                                        file_info['mtime'],
-                                        file_level
-                                    ])
+                                    if collect_resolution:
+                                        all_rows.append([
+                                            file_info['name'],
+                                            "文件",
+                                            file_info['path'],
+                                            file_info['size'],
+                                            file_info['mtime'],
+                                            file_info['resolution'],
+                                            file_level
+                                        ])
+                                    else:
+                                        all_rows.append([
+                                            file_info['name'],
+                                            "文件",
+                                            file_info['path'],
+                                            file_info['size'],
+                                            file_info['mtime'],
+                                            file_level
+                                        ])
                                 total_items += 1
                                 processed_items += 1
                                 
@@ -1092,7 +1158,7 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
                         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                             # 提交所有文件处理任务
                             future_to_file = {
-                                executor.submit(get_file_info_async, os.path.join(root, file), collect_details): file 
+                                executor.submit(get_file_info_async, os.path.join(root, file), collect_details, collect_resolution): file 
                                 for file in files
                             }
                             
@@ -1101,14 +1167,25 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
                                 file_info = future.result()
                                 file_level = level + 1
                                 
-                                all_rows.append([
-                                    file_info['name'],
-                                    "文件",
-                                    file_info['path'],
-                                    file_info['size'],
-                                    file_info['mtime'],
-                                    file_level
-                                ])
+                                if collect_resolution:
+                                    all_rows.append([
+                                        file_info['name'],
+                                        "文件",
+                                        file_info['path'],
+                                        file_info['size'],
+                                        file_info['mtime'],
+                                        file_info['resolution'],
+                                        file_level
+                                    ])
+                                else:
+                                    all_rows.append([
+                                        file_info['name'],
+                                        "文件",
+                                        file_info['path'],
+                                        file_info['size'],
+                                        file_info['mtime'],
+                                        file_level
+                                    ])
                                 total_items += 1
                                 processed_items += 1
                                 
@@ -1198,7 +1275,7 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
                     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
                         # 提交所有文件处理任务
                         future_to_file = {
-                            executor.submit(get_file_info_async, item_path, collect_details): item 
+                            executor.submit(get_file_info_async, item_path, collect_details, collect_resolution): item 
                             for item, item_path in files_to_process
                         }
                         
@@ -1210,14 +1287,25 @@ def export_directory_structure_optimized(target_dir, output_csv, format_type="si
                             if format_type == "simple":
                                 all_rows.append([file_level, "File", f"    {file_info['name']}", file_info['path']])
                             else:
-                                all_rows.append([
-                                    file_info['name'],
-                                    "文件",
-                                    file_info['path'],
-                                    file_info['size'],
-                                    file_info['mtime'],
-                                    file_level
-                                ])
+                                if collect_resolution:
+                                    all_rows.append([
+                                        file_info['name'],
+                                        "文件",
+                                        file_info['path'],
+                                        file_info['size'],
+                                        file_info['mtime'],
+                                        file_info['resolution'],
+                                        file_level
+                                    ])
+                                else:
+                                    all_rows.append([
+                                        file_info['name'],
+                                        "文件",
+                                        file_info['path'],
+                                        file_info['size'],
+                                        file_info['mtime'],
+                                        file_level
+                                    ])
                             total_items += 1
                             processed_items += 1
                 
@@ -2063,15 +2151,25 @@ if __name__ == "__main__":
                         collect_details = input("是否收集文件大小和修改时间？(y/n, 默认y): ").strip().lower()
                         if collect_details == "n" or collect_details == "no":
                             collect_details = False
-                            print("禁用详细信息收集 (速度最快)")
+                            print("禁用详细信息收集")
                         else:
                             collect_details = True
                             print("启用详细信息收集")
                         
+                        # 图片分辨率收集选择
+                        collect_resolution = input("是否收集图片分辨率？(y/n, 默认n): ").strip().lower()
+                        if collect_resolution == "y" or collect_resolution == "yes":
+                            collect_resolution = True
+                            print("启用图片分辨率收集")
+                        else:
+                            collect_resolution = False
+                            print("禁用图片分辨率收集")
+                        
                         result = export_directory_structure_optimized(
                             target_dir, output_csv, format_type="detailed", 
                             recursive=recursive, show_progress=True,
-                            max_workers=max_workers, collect_details=collect_details
+                            max_workers=max_workers, collect_details=collect_details,
+                            collect_resolution=collect_resolution
                         )
 
                     print(f"\n=== 执行导出目录结构功能 ===")
