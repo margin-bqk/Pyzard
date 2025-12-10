@@ -180,6 +180,37 @@ def merge_folders(source_folder, target_folder):
         print(f"  合并文件夹失败: {e}")
         raise e
 
+def create_ignore_function(exclude_pattern):
+    """
+    创建一个忽略函数，用于 shutil.copytree 或 os.walk 中排除匹配正则表达式的文件和文件夹
+    
+    Args:
+        exclude_pattern: 正则表达式字符串，用于匹配要排除的文件/文件夹名称
+                        如果为 None 或空字符串，则返回一个不排除任何内容的函数
+    
+    Returns:
+        一个接受 (dir, names) 并返回要忽略的名称列表的函数
+    """
+    if not exclude_pattern:
+        # 如果没有排除模式，返回一个不忽略任何内容的函数
+        return lambda dir, names: []
+    
+    import re
+    try:
+        pattern = re.compile(exclude_pattern)
+    except re.error as e:
+        print(f"警告: 正则表达式 '{exclude_pattern}' 无效: {e}")
+        # 返回一个不忽略任何内容的函数
+        return lambda dir, names: []
+    
+    def ignore_func(dir, names):
+        ignored = []
+        for name in names:
+            if pattern.search(name):
+                ignored.append(name)
+        return ignored
+    
+    return ignore_func
 
 def search_and_copy_files(source, target, csv_file, cut_mode=False, conflict_mode=None):
     """搜索并复制/剪切匹配的文件"""
@@ -567,8 +598,17 @@ def rename_files_in_place(source, csv_file, conflict_mode=None):
     return renamed_files
 
 
-def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mode=None):
-    """提取整个文件夹到指定目录（支持遍历文件树）"""
+def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mode=None, exclude_pattern=None):
+    """提取整个文件夹到指定目录（支持遍历文件树）
+    
+    Args:
+        source: 源目录路径
+        target: 目标目录路径
+        csv_file: CSV文件路径，包含源文件夹名和目标文件夹名
+        cut_mode: 是否为剪切模式
+        conflict_mode: 冲突处理模式
+        exclude_pattern: 正则表达式模式，用于排除匹配的文件/文件夹名称
+    """
     copied_folders = []
     renamed_files = []
     backup_paths = []
@@ -589,6 +629,9 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mod
         # 验证源目录是否存在
         if not os.path.exists(source):
             raise FileNotFoundError(f"源目录不存在: {source}")
+
+        # 创建忽略函数（如果提供了排除模式）
+        ignore_func = create_ignore_function(exclude_pattern)
 
         # 验证目标目录是否存在，如果不存在则创建
         if not os.path.exists(target):
@@ -693,13 +736,13 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mod
                 # 复制模式
                 try:
                     if conflict_mode == "merge" and os.path.exists(resolved_path):
-                        # 合并模式：合并文件夹内容
+                        # 合并模式：合并文件夹内容（不应用排除模式）
                         print(
                             f"  正在合并文件夹内容: {source_folder} -> {resolved_path}"
                         )
                         merge_folders(source_folder, resolved_path)
                     else:
-                        # 其他模式：复制文件夹
+                        # 其他模式：复制文件夹，应用排除模式
                         if (
                             os.path.exists(resolved_path)
                             and conflict_mode == "overwrite"
@@ -710,7 +753,7 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mod
                             # 副本模式：resolved_path已经是副本路径，直接复制
                             pass
 
-                        shutil.copytree(source_folder, resolved_path)
+                        shutil.copytree(source_folder, resolved_path, ignore=ignore_func)
 
                     copied_folders.append(resolved_path)
                     source_paths.append(source_folder)
@@ -768,12 +811,13 @@ def extract_entire_folder(source, target, csv_file, cut_mode=False, conflict_mod
     return copied_folders
 
 
-def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
+def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None, exclude_pattern=None):
     """从CSV路径复制文件/文件夹到目标路径
     Args:
         csv_file: CSV文件路径，第一列为源路径，第二列为目标路径
         cut_mode: 是否为剪切模式
         conflict_mode: 冲突处理模式
+        exclude_pattern: 正则表达式模式，用于排除匹配的文件/文件夹名称
     """
     copied_items = []
     backup_paths = []
@@ -805,6 +849,9 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
         )
 
         os.makedirs(temp_backup_dir, exist_ok=True)
+
+        # 创建忽略函数（如果提供了排除模式）
+        ignore_func = create_ignore_function(exclude_pattern)
 
         # 处理CSV数据
         for item in csv_result["data"]:
@@ -886,6 +933,16 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
                 # 复制模式
                 try:
                     if os.path.isfile(source_path):
+                        # 检查是否应排除文件
+                        if exclude_pattern:
+                            import re
+                            try:
+                                pattern = re.compile(exclude_pattern)
+                                if pattern.search(os.path.basename(source_path)):
+                                    print(f"  排除文件（匹配模式）: {source_path}")
+                                    continue
+                            except re.error:
+                                pass
                         # 复制文件
                         shutil.copy2(source_path, resolved_path)
                     elif os.path.isdir(source_path):
@@ -902,7 +959,7 @@ def copy_files_from_csv_paths(csv_file, cut_mode=False, conflict_mode=None):
                             elif os.path.exists(resolved_path) and conflict_mode == "copy":
                                 # 副本模式：resolved_path已经是副本路径，直接复制
                                 pass
-                            shutil.copytree(source_path, resolved_path)
+                            shutil.copytree(source_path, resolved_path, ignore=ignore_func)
                     
                     copied_items.append(resolved_path)
                     source_paths.append(source_path)
@@ -2086,10 +2143,18 @@ if __name__ == "__main__":
                     else:
                         print("使用复制模式")
 
+                    # ===== 排除模式选择 =====
+                    exclude_pattern = input("请输入正则表达式排除模式（例如 '\\.psd$' 排除.psd文件，留空则不排除）: ").strip()
+                    if exclude_pattern == "":
+                        exclude_pattern = None
+                        print("不启用排除模式")
+                    else:
+                        print(f"启用排除模式: {exclude_pattern}")
+
                     operation = "剪切" if cut_mode else "复制"
                     print(f"\n=== 执行从CSV路径{operation}文件/文件夹功能 ===")
                     copied = copy_files_from_csv_paths(
-                        csv_file, cut_mode, conflict_mode
+                        csv_file, cut_mode, conflict_mode, exclude_pattern
                     )
                     print(f"\n{operation}完成，以下项目已{operation}:")
                     for item in copied:
@@ -2219,10 +2284,18 @@ if __name__ == "__main__":
                         for file in copied:
                             print(" -", file)
                     else:
+                        # ===== 排除模式选择 =====
+                        exclude_pattern = input("请输入正则表达式排除模式（例如 '\\.psd$' 排除.psd文件，留空则不排除）: ").strip()
+                        if exclude_pattern == "":
+                            exclude_pattern = None
+                            print("不启用排除模式")
+                        else:
+                            print(f"启用排除模式: {exclude_pattern}")
+
                         operation = "剪切" if cut_mode else "复制"
                         print(f"\n=== 执行提取整个文件夹功能 ({operation}模式) ===")
                         copied = extract_entire_folder(
-                            source, target, csv_file, cut_mode, conflict_mode
+                            source, target, csv_file, cut_mode, conflict_mode, exclude_pattern
                         )
                         print(f"\n{operation}完成，以下文件夹已{operation}:")
                         for folder in copied:
